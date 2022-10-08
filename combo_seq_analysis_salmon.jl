@@ -737,7 +737,7 @@ function miRNADiscoveryCalculation(Trimmed_Fastq_Files :: Vector{String}, Organi
         bowtie2_reference_name, target_genus_abbreviation  = CreateTargetOrganismFastaFile(Organism_Name)
     else
         bowtie2_reference_name, target_genus_abbreviation  = CreateTargetOrganismFastaFile(Organism_Name)
-        bowtie2_reference_name = "/data/indices/human_mature"
+        bowtie2_reference_name = "human_mature"
     end
 
     #Loops through each sample and calulates how many miRNA were captured
