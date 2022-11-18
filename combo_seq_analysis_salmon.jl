@@ -103,7 +103,7 @@ function CreateReferenceFile(Need_Reference :: String)
 
     else
         #If a custom database isn't used; script defaults to using a human reference
-        salmon_reference_name = "/usr/local/scripts/RNASeq_QC/gencode.v41.2"
+        salmon_reference_name = "gencode.v41.2"
         organism_name = "Homo Sapiens"
     end
 
@@ -350,7 +350,12 @@ function PlotFragmentLengths(Length_Files :: Vector{String})
 
         plot = Figure(resolution = (1800, 1200))
         next!(progress_bar_update)
-        Axis(plot[1, 1], xlabel = "Fragment Lengths", ylabel = "Number of Reads", title = sample_name)
+        Axis(plot[1, 1]
+        , xticks = 20:5:maximum(fragment_lengths)
+        , xlabel = "Fragment Lengths"
+        , ylabel = "Number of Reads"
+        , title = sample_name
+        )
         next!(progress_bar_update)
 
         #Make sample barplot
@@ -382,6 +387,30 @@ function PlotFragmentLengths(Length_Files :: Vector{String})
 
 end
 
+function CalculateDuplicateReads(Fastq :: String)
+    read_counter :: Int64 = 0
+    fastq :: IOStream = open(Fastq, "r")
+    all_sequences = Vector{String}()
+
+    for line in eachline(fastq)
+        #Add every second line from the fastq, .i.e. the read sequence
+        push!(all_sequences, readline(fastq))
+
+        #Skip spacer and quality strings
+        readline(fastq)   
+        readline(fastq)
+
+        #Track the number of reads in the fastq
+        read_counter += 1
+    end
+
+    close(fastq)
+
+    unique_reads = 100 * length(unique(all_sequences)) / read_counter
+
+    return round(100 - unique_reads, digits = 2)
+end
+
 #Determine basic library metrics and write them to a file for plotting
 function CalculateSalmonMetrics(Trimmed_Fastq_Files :: Vector{String})
     number_of_records :: Int64 = length(Trimmed_Fastq_Files)
@@ -396,14 +425,8 @@ function CalculateSalmonMetrics(Trimmed_Fastq_Files :: Vector{String})
     for fastq_file in Trimmed_Fastq_Files
         sample_name :: SubString{String} = match(r"sub_\K\w+(?=\.)", fastq_file).match
 
-        #Uses dedupe.sh from bbmap to calculate the percent duplicates in each sample
-        wait(run(pipeline(`/usr/local/bin/bbmap/dedupe.sh 
-        in=$fastq_file 
-        outd=$sample_name.deduplication_statistics 
-        showspeed=f`
-        )
-        , wait=false
-        ))
+        #Calculate the percent duplicates in each sample
+        deduplication_statistics = CalculateDuplicateReads(fastq_file)
 
         #Gather metrics data from accumlulated analysis files
         cutadapt_information = read(`cat sub_$sample_name.cutadapt_information`, String)
@@ -411,17 +434,14 @@ function CalculateSalmonMetrics(Trimmed_Fastq_Files :: Vector{String})
         Salmon_log_file = read(`cat sub_$sample_name.salmon_quant.log`, String)
         miRNA_aligned_reads = readchomp(`samtools view -c -F 0x4 $sample_name.miRNA.bam`)
         total_read_count = readchomp(`samtools view -c $sample_name.miRNA.bam`)
-        deduplicated_read_count = readchomp(pipeline(`cat $sample_name.deduplication_statistics`, `wc -l`))
 
         #Convert gathered strings into floats for calculations and adding to the output file
         #They need to be floats in order to plot them later
         miRNA_aligned_reads = parse(Float64, miRNA_aligned_reads)
-        total_read_count = parse(Float64, total_read_count)
-        deduplicated_read_count = parse(Float64, deduplicated_read_count) / 2
+        total_read_count = parse(Int64, total_read_count)
 
-        #Calculate miRNA alignment rate and the number of duplicated reads
+        #Calculate miRNA alignment rate
         miRNA_mapping :: Float64 = round(100 * miRNA_aligned_reads / total_read_count, digits = 2)
-        deduplication_statistics :: Float64 = round(100 * deduplicated_read_count / total_read_count, digits = 2)
 
         #Uses Salmon output JSON file which reports the number of fragments that had at least one mapping compatible with a stranded library
         total_directional_RNAs_string = match(r"\"num_assigned_fragments\":.\K\d+", Salmon_library_counts_file).match
@@ -456,6 +476,9 @@ function CalculateSalmonMetrics(Trimmed_Fastq_Files :: Vector{String})
     end
 
     close(metrics_file)
+
+    #Remove deduplicated fastq
+    TrashRemoval("dedup.fastq")
 
     #Returns the metrics file name
     return match(r"file \K\w+\.\w+", metrics_file.name).match
@@ -718,6 +741,8 @@ function CreateTargetOrganismFastaFile(Organism_Name :: String)
     , wait=false
     ))
 
+    TrashRemoval("mirBase_genus_list.txt")
+
     return bowtie2_reference_name, target_genus_abbreviation
 end
 
@@ -737,7 +762,6 @@ function miRNADiscoveryCalculation(Trimmed_Fastq_Files :: Vector{String}, Organi
         bowtie2_reference_name, target_genus_abbreviation  = CreateTargetOrganismFastaFile(Organism_Name)
     else
         bowtie2_reference_name, target_genus_abbreviation  = CreateTargetOrganismFastaFile(Organism_Name)
-        bowtie2_reference_name = "human_mature"
     end
 
     #Loops through each sample and calulates how many miRNA were captured
@@ -941,6 +965,10 @@ function TrashRemoval(Files_to_Delete :: Vector{String})
     end
 end
 
+function TrashRemoval(File_to_Delete :: String)
+    rm(File_to_Delete)
+end
+
 #Remove intermediate files
 function GarbageCollection()
     Files_to_Delete = (
@@ -956,6 +984,10 @@ function GarbageCollection()
             rm(file)
         end
     end
+
+    json_files = CaptureTargetFiles(".json")
+    TrashRemoval(json_files)
+
 end
 
 function main()
