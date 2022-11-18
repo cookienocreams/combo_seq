@@ -90,20 +90,37 @@ function CreateReferenceFile(Need_Reference :: String)
         close(concatenated_reference_file)
 
         #Creates reference Salmon database for use in further analyses
-        wait(run(pipeline(
-        `salmon 
-        index
-        -t gentrome.fa
-        -i $salmon_reference_name
-        --decoys salmon_decoys.txt
-        -k 21
-        --threads 12`)
-        , wait=false
-        ))
+        for line in eachline(file)
+            if occursin("ENST", line) 
+                wait(run(pipeline(
+                `salmon 
+                index 
+                -i $salmon_reference_name 
+                --transcripts reference_transcriptome_fasta_name 
+                -k 21 
+                --threads 12 
+                --gencode`)
+                , wait=false
+                ))
+                break
+            else 
+                wait(run(pipeline(
+                `salmon 
+                index 
+                -i $salmon_reference_name 
+                --transcripts reference_transcriptome_fasta_name 
+                -k 21 
+                --threads 12`)
+                , wait=false
+                ))
+                break
+            end
+        end
+        
 
     else
         #If a custom database isn't used; script defaults to using a human reference
-        salmon_reference_name = "gencode.v41.2"
+        salmon_reference_name = "gencode.42"
         organism_name = "Homo Sapiens"
     end
 
@@ -287,7 +304,7 @@ function ConvertSAMToBAM(Salmon_Aligned_SAM_Files :: Vector{String})
         run(pipeline(
         `samtools
         view
-        -@ 48
+        -@ 12
         -b
         -o $sample_name.bam
         $sam_file`
@@ -314,7 +331,7 @@ function CalculateReadLengthDistribution(Salmon_BAM_Files :: Vector{String})
         read(pipeline(
         `samtools 
         stats 
-        -@ 48 
+        -@ 12 
         $bam_file`
         , `grep ^RL`
         , `cut -f 2-`)
@@ -769,7 +786,7 @@ function miRNADiscoveryCalculation(Trimmed_Fastq_Files :: Vector{String}, Organi
         sample_name :: SubString{String} = match(r"sub_\K\w+(?=\.)", fastq_file).match
         wait(run(pipeline(
         `bowtie2
-        --threads 48
+        --threads 12
         -x $bowtie2_reference_name
         -U $fastq_file
         -S $sample_name.miRNA.sam`
@@ -780,7 +797,7 @@ function miRNADiscoveryCalculation(Trimmed_Fastq_Files :: Vector{String}, Organi
         run(pipeline(
         `samtools
         view
-        -@ 48
+        -@ 12
         -b
         -o $sample_name.miRNA.bam
         $sample_name.miRNA.sam`
