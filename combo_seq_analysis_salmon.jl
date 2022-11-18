@@ -137,20 +137,8 @@ function CaptureTargetFiles(Files_To_Capture :: String)
     return [file for file in files_in_directory if occursin(Files_To_Capture, file)]
 end
 
-#Updates progress bar on the command line when interval is a float
-function ProgressBarUpdate(Number_of_Records::Int64, Interval::Float64, Description::String)
-    progress_bar_update = Progress(Number_of_Records
-    , dt=Interval
-    , barglyphs=BarGlyphs("[=> ]")
-    , barlen=100
-    , desc=Description
-    )
-
-    return progress_bar_update
-end
-
-#Updates progress bar on the command line when interval is an integer
-function ProgressBarUpdate(Number_of_Records::Int64, Interval::Int64, Description::String)
+#Updates progress bar on the command line
+function ProgressBarUpdate(Number_of_Records :: Int64, Interval :: Number, Description :: String)
     progress_bar_update = Progress(Number_of_Records
     , dt=Interval
     , barglyphs=BarGlyphs("[=> ]")
@@ -454,9 +442,6 @@ function CalculateSalmonMetrics(Trimmed_Fastq_Files :: Vector{String})
         miRNA_aligned_reads = readchomp(`samtools view -c -F 0x4 $sample_name.miRNA.bam`)
         total_read_count = readchomp(`samtools view -c $sample_name.miRNA.bam`)
 
-        #Calculate miRNA alignment rate
-        miRNA_mapping :: Float64 = round(100 * miRNA_aligned_reads / total_read_count, digits = 2)
-
         #Uses Salmon output JSON file which reports the number of fragments that had at least one mapping compatible with a stranded library
         total_directional_RNAs_string = match(r"\"num_assigned_fragments\":.\K\d+", Salmon_library_counts_file).match
         consistent_directional_RNAs_string = match(r"\"num_frags_with_concordant_consistent_mappings\":.\K\d+", Salmon_library_counts_file).match
@@ -480,6 +465,9 @@ function CalculateSalmonMetrics(Trimmed_Fastq_Files :: Vector{String})
 
         #Calculate strand directionality
         percent_directionality :: Float64 = round(100 * consistent_directional_RNAs / total_directional_RNAs, digits = 2)
+
+        #Calculate miRNA alignment rate
+        miRNA_mapping :: Float64 = round(100 * miRNA_aligned_reads / total_read_count, digits = 2)
 
         #Write data to the output file
         output = "$sample_name\
