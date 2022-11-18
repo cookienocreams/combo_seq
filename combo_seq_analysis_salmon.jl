@@ -437,6 +437,8 @@ function CalculateSalmonMetrics(Trimmed_Fastq_Files :: Vector{String})
 
     #Make output metrics file to write stats into
     metrics_file = open("ComboSeq_metrics.tsv", "w")
+
+    #Add column names to metrics file
     write(metrics_file, column_names, "\n")
 
     for fastq_file in Trimmed_Fastq_Files
@@ -452,30 +454,32 @@ function CalculateSalmonMetrics(Trimmed_Fastq_Files :: Vector{String})
         miRNA_aligned_reads = readchomp(`samtools view -c -F 0x4 $sample_name.miRNA.bam`)
         total_read_count = readchomp(`samtools view -c $sample_name.miRNA.bam`)
 
-        #Convert gathered strings into floats for calculations and adding to the output file
-        #They need to be floats in order to plot them later
-        miRNA_aligned_reads = parse(Float64, miRNA_aligned_reads)
-        total_read_count = parse(Int64, total_read_count)
-
         #Calculate miRNA alignment rate
         miRNA_mapping :: Float64 = round(100 * miRNA_aligned_reads / total_read_count, digits = 2)
 
         #Uses Salmon output JSON file which reports the number of fragments that had at least one mapping compatible with a stranded library
         total_directional_RNAs_string = match(r"\"num_assigned_fragments\":.\K\d+", Salmon_library_counts_file).match
         consistent_directional_RNAs_string = match(r"\"num_frags_with_concordant_consistent_mappings\":.\K\d+", Salmon_library_counts_file).match
-        total_directional_RNAs = parse(Float64, total_directional_RNAs_string)
-        consistent_directional_RNAs = parse(Float64, consistent_directional_RNAs_string)
-        percent_directionality :: Float64 = round(100 * consistent_directional_RNAs / total_directional_RNAs, digits = 2)
-
+        
         #Uses Salmon output log file to gather the mRNA mapping rate
         mRNA_mapping_string = match(r"Mapping rate =.\K\d+\.\d{2}", Salmon_log_file).match
-        mRNA_mapping = parse(Float64, mRNA_mapping_string)
-
-        #Stores cutadapt trimming information in a variable so that adapter and short fragment data can be easily captured by Regex
+        
+        #Search cutadapt trimming information so that adapter and short fragment data can be easily captured by Regex
         reads_with_adapters_string = match(r"Reads with adapters:.+\(\K.+(?=\%)", cutadapt_information).match
         reads_too_short_string = match(r"Reads that were too short:.+\(\K.+(?=\%)", cutadapt_information).match
+        
+        #Convert gathered strings into floats for calculations and adding to the output file
+        #They need to be floats in order to plot them later
+        miRNA_aligned_reads = parse(Float64, miRNA_aligned_reads)
+        total_read_count = parse(Int64, total_read_count)
         reads_with_adapters = parse(Float64, reads_with_adapters_string)
         reads_too_short = parse(Float64, reads_too_short_string)
+        mRNA_mapping = parse(Float64, mRNA_mapping_string)
+        total_directional_RNAs = parse(Float64, total_directional_RNAs_string)
+        consistent_directional_RNAs = parse(Float64, consistent_directional_RNAs_string)
+
+        #Calculate strand directionality
+        percent_directionality :: Float64 = round(100 * consistent_directional_RNAs / total_directional_RNAs, digits = 2)
 
         #Write data to the output file
         output = "$sample_name\
@@ -493,9 +497,6 @@ function CalculateSalmonMetrics(Trimmed_Fastq_Files :: Vector{String})
     end
 
     close(metrics_file)
-
-    #Remove deduplicated fastq
-    TrashRemoval("dedup.fastq")
 
     #Returns the metrics file name
     return match(r"file \K\w+\.\w+", metrics_file.name).match
@@ -696,7 +697,7 @@ function GetGenusNames(miRBase_Fasta::String)
 
     output_genus_file :: IOStream = open("mirBase_genus_list.txt", "w")
     for (genus, abbreviation) in genus_dictionary
-        write(output_genus_file, genus * "," * abbreviation * "\n")
+        write(output_genus_file, string(genus, ",", abbreviation, "\n"))
     end
 
     close(output_genus_file)
@@ -850,6 +851,7 @@ function PlotMiRNACounts(miRNA_Files :: Vector{String})
         x, y = 1:4, [threshold_of_one, threshold_of_three, threshold_of_five, threshold_of_ten]
 
         fig = Figure(resolution = (1800, 1200))
+
         ax = Axis(fig[1, 1]
         , xticks = (1:4
         , ["Threshold 1", "Threshold 3", "Threshold 5", "Threshold 10"])
@@ -913,6 +915,7 @@ function PlotMRNACounts(mRNA_Files :: Vector{String})
 
         #Captures the name and TPM count of each mRNA with a TPM of at least 1
         mRNA_at_threshold_of_one = mRNA_file[mRNA_file[!,:TPM] .>= 1, [:Name, :TPM]]
+
         #Sort output dataframe with mRNA TPM counts by the most highly expressed mRNAs
         sorted_mRNA_at_threshold_of_one = sort(mRNA_at_threshold_of_one[!, [:Name, :TPM]]
         , :TPM
@@ -934,6 +937,7 @@ function PlotMRNACounts(mRNA_Files :: Vector{String})
         ]
         
         fig = Figure(resolution = (1800, 1200))
+        
         ax = Axis(fig[1, 1]
         , xticks = (1:5
         , ["Threshold 1", "Threshold 10", "Threshold 100", "Threshold 500", "Threshold 1000"])
