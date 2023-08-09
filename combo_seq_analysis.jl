@@ -1,4 +1,3 @@
-module combo_seq_analysis
 
 #<><><><><><>#<><><><><><>#<><><><><><>#<><><><><><>#<><><><><><>#<><><><><><>#<><><><><><>#<><><><><><>#<><><><><><>#<><><><><><>#<><><><><><>#<><><><><><>#<><><><><><>#<><><><><><>#
 # Combo-Seq pipeline
@@ -23,68 +22,131 @@ using UMAP
 using Clustering
 using Distances
 using PDFmerger
+using DataStructures
+using BioSequences
+using XAM
+using FASTX
+using BGZFStreams
+using CodecZlib
 
 """
-    CaptureTargetFiles(Files_To_Capture::String)
+    capture_target_files(files_to_capture::AbstractString)
 
 List all files in the current directory. 
 
 Check to see if each file contains the target file's string. 
 
-#Example
+# Example
 ```julia
-julia> CaptureTargetFiles(".txt")
+julia> capture_target_files(".txt")
 3-element Vector{String}:
  "file1.txt"
  "file2.txt"
  "file3.txt"
 ```
 """
-function CaptureTargetFiles(Files_To_Capture::String)
-    return [file for file in readdir() if occursin(Files_To_Capture, file)]
+function capture_target_files(files_to_capture::AbstractString)
+    return filter(file -> occursin(files_to_capture, file), readdir())
 end
 
 """
 Update progress bar on the command line.
 """
-function ProgressBarUpdate(Number_of_Records::Int64
-                            , Interval::Number
-                            , Description::String
+function progress_bar_update(number_of_records::Int64
+                            , interval::Number
+                            , description::String
                             )
-    progress_bar_update = Progress(Number_of_Records
-                                    , dt=Interval
-                                    , barglyphs=BarGlyphs("[=> ]")
-                                    , barlen=100
-                                    , desc=Description
-                                    )
+    progress_bar_update = Progress(number_of_records
+    , dt=interval
+    , barglyphs=BarGlyphs("[=> ]")
+    , barlen=100
+    , desc=description
+    )
 
     return progress_bar_update
 end
 
 """
-Make transcripts bowtie2 reference to align fastqs with.
+    get_read_q_score!(line::String, q_score_list::Vector{Number})
+
+Calculate the quality score for a given quality string.
+
+This function accepts ASCII-encoded quality score and produces the average q score 
+using a scalar value that estimates the 'total error probability' for that record.
+It means that if you want to calculate average quality score, you don't just sum
+up all the phred scores and find the average, but rather consider the 
+probability distribution of the scores.
+
+The Phred score for a base `Q` is calculated as `Q = ASCII value of quality score - 33`.
+The error probability `P` for that base is then calculated as `P = 10^(-Q/10)`.
+Then these probabilities are summed up for all the bases to derive total error.
+
+# Arguments
+
+`q_score` - The quality scores of the current line.
+`q_score_list` - The vector containing all calculated quality scores.
+
+# Returns
+
+The updated q score list the line's average quality score.
+
+# Reference
+
+Illumina's explanation on quality scores and their corresponding error rates:
+<https://www.illumina.com/science/technology/next-generation-sequencing/plan-experiments/quality-scores.html>
+
+# Example
+```julia
+julia> get_read_q_score!("FGFEEE<FC<FGGGGGGGGGGGFFGFG8<@8CFFGF8EFGGCGFGGGGGGFG", [36.2, 35.9])
+3-element Vector{Float64}:
+ 36.2
+ 35.9
+ 35.7
+```
 """
-function MakeBowtie2Reference(Transcriptome_Fasta::String, Salmon_Reference_Name::AbstractString)
+function get_read_q_score!(line::String, q_score_list::Vector{Float64})
+    probability_sum = 0
+
+    # Calculate the error distribution for the current fastq record
+    for char in codeunits(line)
+        phred = char - 33
+        error_probability = 10^(-phred / 10.0)
+        probability_sum += error_probability
+    end
+
+    prob_q_score = probability_sum / length(line)
+    q_score = -10.0 * log10(prob_q_score)
+
+    # Add Q score to list
+    push!(q_score_list, q_score) 
+
+    return q_score_list
+end
+
+"""
+Make transcriptome bowtie2 reference to align fastqs with.
+"""
+function make_bowtie2_reference(transcriptome_fasta::String, salmon_reference_name::AbstractString)
     wait(run(pipeline(
             `bowtie2-build 
-            $Transcriptome_Fasta 
-            $Salmon_Reference_Name`)
+            $transcriptome_fasta 
+            $salmon_reference_name`)
             , wait = false
             )
         )
 end
 
 """
-Make Salmon reference
+Make Salmon reference for mRNA alignment.
 """
-function MakeSalmonReference(Salmon_Reference_Name::String, Transcriptome_Fasta::String)
-    #Remove extra header lines from gencode fasta file if one is used
-    for line in eachline(Transcriptome_Fasta)
+function make_salmon_reference(salmon_reference_name::String, transcriptome_fasta::String)
+    # Remove extra header lines from gencode fasta file if one is used
+    for line in eachline(transcriptome_fasta)
         if occursin("ENST", line) 
             wait(run(pipeline(
                     `salmon 
                     index 
-                    -i $Salmon_Reference_Name 
+                    -i $salmon_reference_name 
                     --transcripts gentrome.fa
                     -k 19 
                     --threads 12
@@ -98,7 +160,7 @@ function MakeSalmonReference(Salmon_Reference_Name::String, Transcriptome_Fasta:
             wait(run(pipeline(
                     `salmon 
                     index 
-                    -i $Salmon_Reference_Name 
+                    -i $salmon_reference_name 
                     --transcripts gentrome.fa
                     -k 19 
                     --threads 12
@@ -116,41 +178,41 @@ Function asks the user if they would like to download a non-human reference
 for use by Salmon during the alignment step. If yes, the files are downloaded
 and the genome names are extracted to name the Salmon directory.
 """
-function CreateReferenceFile(Need_Reference::String)
+function create_reference_file(need_reference::String)
 
-    if Need_Reference === "y"
-        #Make diredctory to store downloaded files and created reference files
+    if need_reference === "y"
+        # Make diredctory to store downloaded files and created reference files
         !isdir("data") && mkdir("data")
 
-        #Download files and make reference files inside data folder
+        # Download files and make reference files inside data folder
         cd("data")
 
-        #Need to gather organism name to make species specific RNA annotations for use in alignment later 
+        # Need to gather organism name to make species specific RNA annotations for use in alignment later 
         print("What is the scientific name of the organism you would like to use (e.g. mus musculus)?: ")
         organism_name = readline()
 
         print("Input website url containing the desired transcriptome reference fasta: ")
         reference_transcriptome_fasta = readline()
 
-        #Check to see if the url contains the secure hypertext protocol, i.e. 'https:'
-        #If yes, that is replaced by the non-secure protocol, i.e. http:, to avoid certificate errors
+        # Check to see if the url contains the secure hypertext protocol, i.e. 'https:'
+        # If yes, that is replaced by the non-secure protocol, i.e. http:, to avoid certificate errors
         transcriptome_fasta_hypertext_protocol = match(r"^.+(?=\/\/)", reference_transcriptome_fasta)
         if transcriptome_fasta_hypertext_protocol.match == "https:"
             reference_transcriptome_fasta_address = match(r"(?!.+\/\/).+", reference_transcriptome_fasta)
             reference_transcriptome_fasta = "http:" * reference_transcriptome_fasta_address.match
         end
 
-        #Capture filenames to be used to refer to the downloaded file
+        # Capture filenames to be used to refer to the downloaded file
         reference_transcriptome_fasta_name = last(splitpath(reference_transcriptome_fasta))
         unzipped_reference_transcriptome_fasta = replace(reference_transcriptome_fasta_name, ".gz" => "")
 
-        #Download desired transcriptome fasta file and determines the filename
+        # Download desired transcriptome fasta file and determine the filename
         run(`wget 
             $reference_transcriptome_fasta 
             -O $reference_transcriptome_fasta_name
             --no-check-certificate
             --quiet`
-            )
+        )
 
         print("Input website url containing the desired genomic reference fasta: ")
         reference_fasta = readline()
@@ -165,23 +227,23 @@ function CreateReferenceFile(Need_Reference::String)
         unzipped_reference_fasta_name = replace(reference_fasta_name, ".gz" => "")
         salmon_reference_name = first(split(reference_fasta_name, "."))
 
-        #Make miRNA fasta for bowtie2 reference
-        CreateTargetOrganismFastaFile(organism_name)
+        # Make miRNA fasta for bowtie2 reference
+        create_target_organism_fasta_file(organism_name)
 
-        #Download desired genome fasta file
+        # Download desired genome fasta file
         run(`wget 
             $reference_fasta 
             -O $reference_fasta_name
             --no-check-certificate
             --quiet`
-            )
+        )
 
-        #Unzip downloaded fasta before running it through Salmon index generation
+        # Unzip downloaded fasta before running it through Salmon index generation
         run(`gunzip $reference_transcriptome_fasta_name`)
         run(`gunzip $reference_fasta_name`)
         
-        #Create decoy sequences list needed to mask the genome and improve mRNA quantification
-        #See Salmon documentation for more info https://salmon.readthedocs.io/en/latest/salmon.html
+        # Create decoy sequences list needed to mask the genome and improve mRNA quantification
+        # See Salmon documentation for more info https://salmon.readthedocs.io/en/latest/salmon.html
         genomic_target_names = 
         read(pipeline(
                     `cat $unzipped_reference_fasta_name`
@@ -191,13 +253,13 @@ function CreateReferenceFile(Need_Reference::String)
                     , String
             )
 
-        #Write decoy sequences to a new file for use during Salmon index creation
+        # Write decoy sequences to a new file for use during Salmon index creation
         open("salmon_decoys.txt", "w") do decoys_output
             write(decoys_output, genomic_target_names)
         end
         run(`sed -i.bak -e 's/>//g' salmon_decoys.txt`)
 
-        #Add genome fasta to transcriptome fasta for masking during Salmon index creation 
+        # Add genome fasta to transcriptome fasta for masking during Salmon index creation 
         concatenated_reference = read(pipeline(`
                                     cat $unzipped_reference_transcriptome_fasta
                                     $unzipped_reference_fasta_name
@@ -207,9 +269,9 @@ function CreateReferenceFile(Need_Reference::String)
             write(concatenated_reference_file, concatenated_reference)
         end
 
-        #Create reference Salmon and Bowtie2 databases for use in further analyses
-        MakeSalmonReference(salmon_reference_name, unzipped_reference_transcriptome_fasta)
-        MakeBowtie2Reference(unzipped_reference_transcriptome_fasta, salmon_reference_name)
+        # Create reference Salmon and Bowtie2 databases for use in further analyses
+        make_salmon_reference(salmon_reference_name, unzipped_reference_transcriptome_fasta)
+        make_bowtie2_reference(unzipped_reference_transcriptome_fasta, salmon_reference_name)
 
         cd("../")
     else
@@ -221,14 +283,14 @@ function CreateReferenceFile(Need_Reference::String)
             salmon_reference_name = "/data/analysis_files/GRCm39"
             organism_name = "Mus musculus"
             cd("data")
-            CreateTargetOrganismFastaFile(organism_name)
+            create_target_organism_fasta_file(organism_name)
             cd("../")
         else
-            #If a custom database isn't used; script defaults to using a human reference
-            salmon_reference_name = "/usr/local/scripts/RNASeq_QC/gencode.v41.2"
+            # If a custom database isn't used; script defaults to using a human reference
+            salmon_reference_name = "/data/analysis_files/RNA_seq_QC/gencode.v41.2"
             organism_name = "Homo Sapiens"
             cd("data")
-            CreateTargetOrganismFastaFile(organism_name)
+            create_target_organism_fasta_file(organism_name)
             cd("../")
         end
     end
@@ -237,35 +299,8 @@ function CreateReferenceFile(Need_Reference::String)
 end
 
 """
-    GetReadQScore!(Line::String, Q_Score_List::Vector{Number})
-
-Calculate the quality score for a given quality string.
-
-Convert quality string to Phred33 score and update q score vector.
-
-#Example
-```julia
-julia> GetReadQScore!("FGFEEE<FC<FGGGGGGGGGGGFFGFG8<@8CFFGF8EFGGCGFGGGGGGFG", [36.2, 35.9])
-3-element Vector{Float64}:
- 36.2
- 35.9
- 35.7
-```
-"""
-function GetReadQScore!(Line::String, Q_Score_List::Vector{Number})
-
-    #Find read quality by converting quality encodings to Unicode numbers
-    q_score = sum(codeunits(Line)) / length(Line)
-
-    #Add Q score to list and convert to a Phred33 score
-    push!(Q_Score_List, q_score - 33) 
-
-    return Q_Score_List
-end
-
-"""
-    ParseFastqFiles(Fastqs::Vector{String}
-                        , Sample_Names::Vector{SubString{String}}
+    parse_fastq_files(fastqs::Vector{String}
+                        , sample_names::Vector{SubString{String}}
                         )
 
 Loop through fastqs to calculate read counts, quality scores, and percent dimer.
@@ -281,7 +316,7 @@ strings by the number of quality strings.
 
 #Example
 ```julia
-julia> ParseFastqFiles(["sample1.fastq.gz","sample2.fastq.gz","sample3.fastq.gz"]
+julia> parse_fastq_files(["sample1.fastq.gz","sample2.fastq.gz","sample3.fastq.gz"]
                             , ["sample1", "sample2", "sample3"])
 Dict{String, Int64} with 3 entries:
   "sample1" => 6390314
@@ -297,24 +332,24 @@ Dict{String, Number} with 3 entries:
   "sample3" => 35.9
 ```
 """
-function ParseFastqFiles(Fastqs::Vector{String}
-                        , Sample_Names::Vector{SubString{String}}
-                        )
+function parse_fastq_files(fastqs::Vector{String}
+                            , sample_names::Vector{SubString{String}}
+                            )
 
-    number_of_records = length(Fastqs)
-    progress_bar_update = ProgressBarUpdate(number_of_records
+    number_of_records = length(fastqs)
+    update_progress_bar = progress_bar_update(number_of_records
                                             , .5
                                             , "Parsing raw fastq files..."
                                             )
 
     read_count_dict = Dict{String, Int64}()
     dimer_count_dict = Dict{String, Float64}()
-    q_score_dict = Dict{String, Number}()
+    q_score_dict = Dict{String, Float64}()
 
-    for (fastq_file, sample_name) in zip(Fastqs, Sample_Names)
-        #List to store each reads quality information
-        q_score_list = Vector{Number}()
-        #Store dimer information
+    for (fastq_file, sample_name) in zip(fastqs, sample_names)
+        # List to store each reads quality information
+        q_score_list = Vector{Float64}()
+        # Store dimer information
         dimer_count = 0
 
         fastq = GZip.open(fastq_file)
@@ -322,11 +357,11 @@ function ParseFastqFiles(Fastqs::Vector{String}
         line_tracker = 1
 
         for line in eachline(fastq)
-            #Ignore lines without sequence or quality information
+            # Ignore lines without sequence or quality information
             if line_tracker % 4 != 2 && line_tracker % 4 != 0
                 line_tracker += 1
             elseif line_tracker % 4 == 2
-                #Count canonical 0 bp dimer
+                # Count canonical 0 bp dimer
                 dimer = startswith(line, "TGGAATTCTCGGGTGCC")
 
                 if dimer
@@ -336,33 +371,33 @@ function ParseFastqFiles(Fastqs::Vector{String}
                 sample_read_count += 1
                 line_tracker += 1
             elseif line_tracker % 4 == 0
-                #Calculate average quality score
-                GetReadQScore!(line, q_score_list)
+                # Calculate average quality score
+                get_read_q_score!(line, q_score_list)
                 line_tracker += 1
             end  
         end
 
         close(fastq)
 
-        #Add read count to dictionary for use later
+        # Add read count to dictionary for use later
         read_count_dict[sample_name] = sample_read_count
 
-        #Calculate q score for each sample
+        # Calculate q score for each sample
         average_q_score = round(mean(q_score_list), digits = 2)
         q_score_dict[sample_name] = average_q_score
 
         percent_dimer = 100 * dimer_count / sample_read_count
         dimer_count_dict[sample_name] = percent_dimer
 
-        next!(progress_bar_update)
+        next!(update_progress_bar)
     end
 
     return read_count_dict, dimer_count_dict, q_score_dict
 end
 
 """
-    TrimAdapters(Fastqs::Vector{String}
-                    , Sample_Names::Vector{SubString{String}}
+    trim_adapters(fastqs::Vector{String}
+                    , sample_names::Vector{SubString{String}}
                     )
 
 Trim the 3' adapter from each read.
@@ -376,7 +411,7 @@ shorter than 16 bases or that weren't trimmed are discarded.
 
 #Example
 ```julia
-julia> TrimAdapters(["sub_sample1.fastq","sub_sample2.fastq","sub_sample3.fastq"]
+julia> trim_adapters(["sub_sample1.fastq","sub_sample2.fastq","sub_sample3.fastq"]
                         , ["sample1", "sample2", "sample3"])
 3-element Vector{String}:
  "sample1.cut.fastq"
@@ -384,13 +419,13 @@ julia> TrimAdapters(["sub_sample1.fastq","sub_sample2.fastq","sub_sample3.fastq"
  "sample3.cut.fastq"
 ```
 """
-function TrimAdapters(Fastqs::Vector{String}
-                        , Sample_Names::Vector{SubString{String}}
+function trim_adapters(fastqs::Vector{String}
+                        , sample_names::Vector{SubString{String}}
                         )
-    number_of_records = length(Fastqs)
-    progress_bar_update = ProgressBarUpdate(number_of_records, .5, "Trimming adapters...")
+    number_of_records = length(fastqs)
+    update_progress_bar = progress_bar_update(number_of_records, .5, "Trimming adapters...")
 
-    for (fastq_file, sample_name) in zip(Fastqs, Sample_Names)
+    for (fastq_file, sample_name) in zip(fastqs, sample_names)
         min_length = 16
 
         wait(run(pipeline(
@@ -408,53 +443,55 @@ function TrimAdapters(Fastqs::Vector{String}
                 )
             )
 
-        next!(progress_bar_update)
+        next!(update_progress_bar)
     end
 
-    trimmed_fastq_files::Vector{String} = CaptureTargetFiles(".cut.fastq")
+    trimmed_fastq_files::Vector{String} = capture_target_files(".cut.fastq")
 
     return trimmed_fastq_files
 end
 
 """
-    AlignWithSalmon(Trimmed_Fastq_Files::Vector{String}
-                        , Salmon_Reference::AbstractString
-                        , Sample_Names::Vector{SubString{String}}
-                        , Need_Reference::AbstractString
+    align_with_salmon(trimmed_fastq_files::Vector{String}
+                        , salmon_reference::AbstractString
+                        , sample_names::Vector{SubString{String}}
+                        , need_reference::AbstractString
                         )
-This function aligns trimmed FASTQ files to a reference genome using Salmon.
+This function aligns trimmed fASTQ files to a reference genome using Salmon.
 
 The library type (libType) is set to stranded forward (SF) since the Combo-Seq protocol is
 stranded in that direction.
 
-The function takes the following arguments:
+# Arguments
 
-* `Trimmed_Fastq_Files`: A vector of strings containing the paths to the trimmed FASTQ files.
-* `Salmon_Reference`: A string containing the path to the Salmon reference genome.
-* `Sample_Names`: A vector of strings containing the names of the samples.
-* `Need_Reference`: A string indicating whether or not a custom Salmon index was created.
+* `trimmed_fastq_files`: A vector of strings containing the paths to the trimmed fASTQ files.
+* `salmon_reference`: A string containing the path to the Salmon reference genome.
+* `sample_names`: A vector of strings containing the names of the samples.
+* `need_reference`: A string indicating whether or not a custom Salmon index was created.
+
+# Returns 
 
 The function returns a vector of strings containing the paths to the Salmon output files.
 """
-function AlignWithSalmon(Trimmed_Fastq_Files::Vector{String}
-                        , Salmon_Reference::AbstractString
-                        , Sample_Names::Vector{SubString{String}}
-                        , Need_Reference::AbstractString
+function align_with_salmon(trimmed_fastq_files::Vector{String}
+                        , salmon_reference::AbstractString
+                        , sample_names::Vector{SubString{String}}
+                        , need_reference::AbstractString
                         )
-    number_of_records::Int64 = length(Trimmed_Fastq_Files)
-    progress_bar_update = ProgressBarUpdate(number_of_records, .5, "Aligning reads with Salmon...")
+    number_of_records::Int64 = length(trimmed_fastq_files)
+    update_progress_bar = progress_bar_update(number_of_records, .5, "Aligning reads with Salmon...")
 
-    #Iterate over the fastq files
-    for (fastq_file, sample_name) in zip(Trimmed_Fastq_Files, Sample_Names)
+    # Iterate over the fastq files
+    for (fastq_file, sample_name) in zip(trimmed_fastq_files, sample_names)
 
-        #Check if a custom index was created
-        if Need_Reference == "y"
-            salmon_reference = string("data/", Salmon_Reference)
+        # Check if a custom index was created
+        if need_reference == "y"
+            salmon_reference = string("data/", salmon_reference)
         else
-            salmon_reference = Salmon_Reference
+            salmon_reference = salmon_reference
         end
 
-        #Align the fastq file to the salmon reference
+        # Align the fastq file to the salmon reference
         wait(run(pipeline(
                         `salmon 
                         quant
@@ -472,7 +509,7 @@ function AlignWithSalmon(Trimmed_Fastq_Files::Vector{String}
                 )
             )
 
-        #Rename the output files
+        # Rename the output files
         try
             mv("quant.sf", "$sample_name.quant.sf", force=true)
             mv("logs/salmon_quant.log", "$sample_name.salmon_quant.log", force=true)
@@ -483,15 +520,15 @@ function AlignWithSalmon(Trimmed_Fastq_Files::Vector{String}
             exit()
         end
 
-        #Remove the transcript aligned sam files
-        TrashRemoval(CaptureTargetFiles(".mRNA.sam"))
+        # Remove the transcript aligned sam files
+        trash_removal(capture_target_files(".mRNA.sam"))
 
-        #Update the progress bar
-        next!(progress_bar_update)
+        # Update the progress bar
+        next!(update_progress_bar)
     end
 
-    #Get the names of the salmon output files
-    salmon_mrna_counts = CaptureTargetFiles("quant.sf")
+    # Get the names of the salmon output files
+    salmon_mrna_counts = capture_target_files("quant.sf")
 
     return salmon_mrna_counts
 end
@@ -499,16 +536,16 @@ end
 """
 Use aligned SAM files to create a read length distribution file.
 """
-function CalculateReadLengthDistribution(SAM_Files::Vector{String}
-                                        , Sample_Names::Vector{SubString{String}}
-                                        )
-    number_of_records = length(SAM_Files)
-    progress_bar_update = ProgressBarUpdate(number_of_records
+function calculate_read_length_distribution(sam_files::Vector{String}
+                                            , sample_names::Vector{SubString{String}}
+                                            )
+    number_of_records = length(sam_files)
+    update_progress_bar = progress_bar_update(number_of_records
                                             , .5
                                             , "Calculating Read Length Distribution..."
                                             )
 
-    for (sam_file, sample_name) in zip(SAM_Files, Sample_Names)
+    for (sam_file, sample_name) in zip(sam_files, sample_names)
 	    #=
         If the SAM file is empty or almost empty, it will cause errors 
         downstream so the script exits.
@@ -534,9 +571,9 @@ function CalculateReadLengthDistribution(SAM_Files::Vector{String}
             exit()
         end
 
-        next!(progress_bar_update)
+        next!(update_progress_bar)
 
-        #Write read length data to output file
+        # Write read length data to output file
         output_length_file::IOStream = open("read_lengths_$sample_name.tsv", "w")
         write(output_length_file, string("Length", "\t", "Reads", "\n"))
         write(output_length_file, read_length_distibution)
@@ -544,7 +581,7 @@ function CalculateReadLengthDistribution(SAM_Files::Vector{String}
         close(output_length_file)
     end
 
-    length_files::Vector{String} = CaptureTargetFiles("read_lengths_")
+    length_files::Vector{String} = capture_target_files("read_lengths_")
 
     return length_files
 end
@@ -552,25 +589,25 @@ end
 """
 Create barplot of each sample's fragment lengths based on the number of reads found at each length
 """
-function PlotFragmentLengths(Length_Files::Vector{String}
-                            , Sample_Names::Vector{SubString{String}}
-                            )
-    number_of_records = length(Length_Files)
-    progress_bar_update = ProgressBarUpdate(number_of_records
+function plot_fragment_lengths(length_files::Vector{String}
+                                , sample_names::Vector{SubString{String}}
+                                )
+    number_of_records = length(length_files)
+    update_progress_bar = progress_bar_update(number_of_records
                                             , 1
                                             , "Creating Read Length Plot..."
                                             )
 
-    for (file, sample_name) in zip(Length_Files, Sample_Names)
+    for (file, sample_name) in zip(length_files, sample_names)
         length_file::DataFrame = CSV.read(file, DataFrame)
 
-        #Isolate fragment lengths and the number of reads at each length
+        # Isolate fragment lengths and the number of reads at each length
         fragment_lengths::Vector{Int64} = length_file[!, :Length]
         reads_per_length::Vector{Int64} = length_file[!, :Reads]
-        next!(progress_bar_update)
+        next!(update_progress_bar)
 
         plot = Figure(resolution = (1800, 1200))
-        next!(progress_bar_update)
+        next!(update_progress_bar)
 
         Axis(plot[1, 1]
             , xticks = 15:5:maximum(fragment_lengths)
@@ -578,9 +615,9 @@ function PlotFragmentLengths(Length_Files::Vector{String}
             , ylabel = "Number of Reads"
             , title = sample_name
             )
-        next!(progress_bar_update)
+        next!(update_progress_bar)
 
-        #Make sample barplot
+        # Make sample barplot
         barplot!(fragment_lengths
                 , reads_per_length
                 , fillto = -1
@@ -590,46 +627,22 @@ function PlotFragmentLengths(Length_Files::Vector{String}
                 )
 
         save(string(sample_name, "_fragment_lengths.pdf"), plot)
-        next!(progress_bar_update)
+        next!(update_progress_bar)
     end
 
-    pdf_length_files::Vector{String} = CaptureTargetFiles("_fragment_lengths.pdf")
+    pdf_length_files::Vector{String} = capture_target_files("_fragment_lengths.pdf")
 
     merge_pdfs([pdf_length_files...], "ComboSeq_fragment_length_plots.pdf")
 
-    TrashRemoval(pdf_length_files)
-end
-
-function CalculateDuplicateReads(Fastq::String)
-    read_counter = 0
-    fastq::IOStream = open(Fastq, "r")
-    all_sequences = Vector{String}()
-
-    for line in eachline(fastq)
-        #Add every second line from the fastq, .i.e. the read sequence
-        push!(all_sequences, readline(fastq))
-
-        #Skip spacer and quality strings
-        readline(fastq)   
-        readline(fastq)
-
-        #Track the number of reads in the fastq
-        read_counter += 1
-    end
-
-    close(fastq)
-
-    unique_reads = 100 * length(unique(all_sequences)) / read_counter
-
-    return round(100 - unique_reads, digits = 2)
+    trash_removal(pdf_length_files)
 end
 
 """
-    CalculateSalmonMetrics(Trimmed_Fastq_Files::Vector{String}
-                            , Read_Count_Dict::Dict{String, Int64}
-                            , Sample_Names::Vector{SubString{String}}
-                            , Dimer_Count_Dict::Dict{String, Float64}
-                            , Q_Score_Dict::Dict{String, Number}
+    calculate_salmon_metrics(trimmed_fastq_files::Vector{String}
+                            , read_count_dict::Dict{String, Int64}
+                            , sample_names::Vector{SubString{String}}
+                            , dimer_count_dict::Dict{String, Float64}
+                            , q_score_dict::Dict{String, Number}
                             )
 
 Align fastq with specified reference RNA types.
@@ -639,7 +652,7 @@ alignment information in a dictionary.
 
 #Example
 ```julia
-julia> CalculateSalmonMetrics("sample1.cut.fastq"
+julia> calculate_salmon_metrics("sample1.cut.fastq"
                         , Dict("sample1" => 6390314, "sample2" => 5000000, "sample3" => 7052928))
 Dict{String, Float64} with 5 entries:
   "miRNA" => 65.0
@@ -649,24 +662,22 @@ Dict{String, Float64} with 5 entries:
   "rRNA" => 3.3
 ```
 """
-function CalculateSalmonMetrics(Trimmed_Fastq_Files::Vector{String}
-                                , Read_Count_Dict::Dict{String, Int64}
-                                , Sample_Names::Vector{SubString{String}}
-                                , Dimer_Count_Dict::Dict{String, Float64}
-                                , Q_Score_Dict::Dict{String, Number}
-                                )
-    number_of_records = length(Trimmed_Fastq_Files)
-    progress_bar_update = ProgressBarUpdate(number_of_records
+function calculate_salmon_metrics(trimmed_fastq_files::Vector{String}
+                                    , read_count_dict::Dict{String, Int64}
+                                    , sample_names::Vector{SubString{String}}
+                                    , dimer_count_dict::Dict{String, Float64}
+                                    , q_score_dict::Dict{String, Float64}
+                                    )
+    number_of_records = length(trimmed_fastq_files)
+    update_progress_bar = progress_bar_update(number_of_records
                                             , .5
                                             , "Calculating Sample Metrics..."
                                             )
 
-    sample_tracker = 1
-
-    #Make output metrics file to write stats into
+    # Make output metrics file to write stats into
     metrics_file = open("ComboSeq_metrics.csv", "w")
 
-    #Write metrics header information
+    # Write metrics header information
     write(metrics_file, string(
         "Sample", ","
         , "Read Count", ","
@@ -677,59 +688,55 @@ function CalculateSalmonMetrics(Trimmed_Fastq_Files::Vector{String}
         , "miRNA", ","
         , "mRNA", ","
         , "Directionality", ","
-        , "Duplicates", ","
         , "Unaligned Reads"
         , "\n"
         ))
 
-    for (fastq_file, sample_name) in zip(Trimmed_Fastq_Files, Sample_Names)
-        #Calculate q_score score
-        average_q_score = Q_Score_Dict[sample_name]
+    for sample_name in sample_names
+        # Calculate q_score score
+        average_q_score = q_score_dict[sample_name]
 
-        #Gather the number of canonical dimer reads
-        percent_dimer = Dimer_Count_Dict[sample_name]
+        # Gather the number of canonical dimer reads
+        percent_dimer = dimer_count_dict[sample_name]
 
-        #Calculate the percent duplicates in each sample
-        deduplication_statistics = CalculateDuplicateReads(fastq_file)
-
-        #Gather metrics data from accumlulated analysis files
+        # Gather metrics data from accumlulated analysis files
         cutadapt_information = read(`cat $sample_name.cutadapt_information`, String)
         salmon_library_counts_file = read(`cat $sample_name.lib_format_counts.json`, String)
         salmon_log_file = read(`cat $sample_name.salmon_quant.log`, String)
         miRNA_aligned_reads = readchomp(`samtools view -c -F 0x4 $sample_name.miRNA.sam`)
 
-        #Uses Salmon output JSON file which reports the number of fragments that had 
-        #at least one mapping compatible with a stranded library
+        # Uses Salmon output JSON file which reports the number of fragments that had 
+        # at least one mapping compatible with a stranded library
         total_directional_RNAs_string = match(r"\"num_assigned_fragments\":.\K\d+", salmon_library_counts_file).match
         consistent_directional_RNAs_string = match(r"\"num_frags_with_concordant.+\":.\K\d+", salmon_library_counts_file).match
         
-        #Uses Salmon output log file to gather the mRNA mapping rate
+        # Uses Salmon output log file to gather the mRNA mapping rate
         mRNA_mapping_string = match(r"Mapping rate =.\K\d+\.\d{2}", salmon_log_file).match
         
-        #Search cutadapt trimming information so that adapter and short fragment data can be easily captured by Regex
+        # Search cutadapt trimming information so that adapter and short fragment data can be easily captured by Regex
         short_fragments_string = match(r"Reads that were too short:.+\(\K.+(?=\%)", cutadapt_information).match
         
-        #Convert gathered strings into floats for calculations and adding to the output file
-        #They need to be floats in order to plot them later
+        # Convert gathered strings into floats for calculations and adding to the output file
+        # They need to be floats in order to plot them later
         miRNA_aligned_reads = parse(Float64, miRNA_aligned_reads)
         short_fragments = abs(parse(Float64, short_fragments_string) - percent_dimer)
         mRNA_mapping = parse(Float64, mRNA_mapping_string)
         total_directional_RNAs = parse(Float64, total_directional_RNAs_string)
         consistent_directional_RNAs = parse(Float64, consistent_directional_RNAs_string)
 
-        #Calculate strand directionality
+        # Calculate strand directionality
         percent_directionality::Float64 = round(100 * consistent_directional_RNAs / total_directional_RNAs, digits = 2)
 
-        #Calculate miRNA alignment rate
-        miRNA_mapping::Float64 = round(100 * miRNA_aligned_reads / Read_Count_Dict[sample_name], digits = 2)
+        # Calculate miRNA alignment rate
+        miRNA_mapping::Float64 = round(100 * miRNA_aligned_reads / read_count_dict[sample_name], digits = 2)
 
         aligned_reads = round(miRNA_mapping + mRNA_mapping, digits = 2)
         unaligned_reads = round(100 - aligned_reads - percent_dimer - short_fragments, digits = 2)
 
-        #Write metrics data to output file
+        # Write metrics data to output file
         write(metrics_file, string(
             sample_name, ","
-            , Read_Count_Dict[sample_name], ","
+            , read_count_dict[sample_name], ","
             , aligned_reads, ","
             , average_q_score, ","
             , round(percent_dimer, digits = 2), ","
@@ -737,48 +744,47 @@ function CalculateSalmonMetrics(Trimmed_Fastq_Files::Vector{String}
             , miRNA_mapping, ","
             , mRNA_mapping, ","
             , percent_directionality, ","
-            , deduplication_statistics, ","
             , unaligned_reads
             , "\n"
             ))
 
-        next!(progress_bar_update)
+        next!(update_progress_bar)
     end
 
     close(metrics_file)
 
-    #Returns the metrics file name
+    # Returns the metrics file name
     return "ComboSeq_metrics.csv"
 end
 
 """
 Create violin plot of each sample's RNA aligment metrics
 """
-function MakeMetricsViolinPlot(Metrics_File::String)
+function make_metrics_violin_plot(metrics_file::String)
 
-    #Import sample metrics file
-    metrics_file::DataFrame = CSV.read(Metrics_File, DataFrame)
+    # Import sample metrics file
+    metrics_file::DataFrame = CSV.read(metrics_file, DataFrame)
 
-    #Create new dataframe without sample names and add sample and column names to arrays
+    # Create new dataframe without sample names and add sample and column names to arrays
     select!(metrics_file, Not([:Sample, Symbol("Read Count")]))
     column_names::Vector{String} = names(metrics_file)
     num_of_cols = last(size(metrics_file))
 
     number_of_records = length(column_names)
-    progress_bar_update = ProgressBarUpdate(number_of_records, .25
+    update_progress_bar = progress_bar_update(number_of_records, .25
                                             , "Creating Violin Plots..."
                                             )
     
-    #Gather each metric's column data for plotting
+    # Gather each metric's column data for plotting
     metrics_columns(a) = [number for number in metrics_file[!, a]]
 
-    #Make empty figure and set x and y axes
-    #x-axis is vector of integers from 1 to the number of metrics
-    #y-axis is vector of vectors containing the data from each metric
+    # Make empty figure and set x and y axes
+    # x-axis is vector of integers from 1 to the number of metrics
+    # y-axis is vector of vectors containing the data from each metric
     fig = Figure(resolution = (1800, 1200))
     x, y = 1:num_of_cols, [metrics_columns(column) for column in 1:num_of_cols]
     
-    #Create violin plot with data from all samples analyzed
+    # Create violin plot with data from all samples analyzed
     for column in 1:num_of_cols
         ax = Axis(fig[1, column]
                 , yticks = 0:5:100
@@ -787,7 +793,7 @@ function MakeMetricsViolinPlot(Metrics_File::String)
                 )
         CairoMakie.ylims!(ax, 0, 100)
 
-        #Make violin plot with combined sample data
+        # Make violin plot with combined sample data
         CairoMakie.violin!(fig[1, column]
                             , repeat([x[column]]
                             , first(size(metrics_file))
@@ -795,25 +801,25 @@ function MakeMetricsViolinPlot(Metrics_File::String)
                             , y[column]
                             , show_median=true
                             )
-        next!(progress_bar_update)
+        next!(update_progress_bar)
 
-        #Save file once all columns have been added
+        # Save file once all columns have been added
         if column == num_of_cols
             save("Violin_plot_metrics.png", fig)
         end
 
-        next!(progress_bar_update)
+        next!(update_progress_bar)
     end
 end
 
 """
 Create barplot of each sample's RNA aligment metrics.
 """
-function PlotMetrics(Metrics_File::String
-                    , Sample_Names::Vector{SubString{String}}
-                    )
+function plot_metrics(metrics_file::String
+                        , sample_names::Vector{SubString{String}}
+                        )
 
-    metrics_file::DataFrame = CSV.read(Metrics_File, DataFrame)
+    metrics_file::DataFrame = CSV.read(metrics_file, DataFrame)
 
     select!(metrics_file, Not([:Sample, Symbol("Read Count")]))
     column_names::Vector{String} = names(metrics_file)
@@ -825,16 +831,16 @@ function PlotMetrics(Metrics_File::String
     
     sample_rows(a) = [values for values in metrics_file[a, :]]
 
-    number_of_records = length(Sample_Names)
-    progress_bar_update = ProgressBarUpdate(number_of_records
+    number_of_records = length(sample_names)
+    update_progress_bar = progress_bar_update(number_of_records
                                             , .25
                                             , "Creating Metrics Plots..."
                                             )
     
-    for sample in eachindex(Sample_Names)
-        sample_name = Sample_Names[sample]
+    for sample in eachindex(sample_names)
+        sample_name = sample_names[sample]
 
-        #Set axis values; y-axis is a vector containing each sample's calculated metrics
+        # Set axis values; y-axis is a vector containing each sample's calculated metrics
         x, y = 1:num_of_cols, sample_rows(sample)
         fig = Figure(resolution = (1800, 1200))
 
@@ -843,10 +849,10 @@ function PlotMetrics(Metrics_File::String
                 , column_names)
                 , yticks = 0:10:100
                 , ylabel = "Percent"
-                , title = string(sample_name, " Metrics - ", "ComboSeq")
+                , title = string(sample_name, " Metrics - ", "Combo-Seq")
                 )
 
-        #Set y-axis limits
+        # Set y-axis limits
         CairoMakie.ylims!(ax, 0, 105)
 
         barplot!(ax
@@ -858,23 +864,23 @@ function PlotMetrics(Metrics_File::String
                 , bar_labels = :y
                 )
 
-        next!(progress_bar_update)
+        next!(update_progress_bar)
 
         save(string(sample_name, "_metrics.pdf"), fig)
     end
 
-    pdf_metrics_files::Vector{String} = CaptureTargetFiles("_metrics.pdf")
+    pdf_metrics_files::Vector{String} = capture_target_files("_metrics.pdf")
 
     merge_pdfs([pdf_metrics_files...], "ComboSeq_metrics_plots.pdf")
     
-    TrashRemoval(pdf_metrics_files)
+    trash_removal(pdf_metrics_files)
 end
 
 """
 Create a file with a list of unique species names given a miRBase mature or hairpin fasta.
 """
-function GetGenusNames(miRBase_Fasta::String)
-    miRNA_reference = GZip.open(miRBase_Fasta)
+function get_genus_names(mirbase_fasta::String)
+    miRNA_reference = open(mirbase_fasta)
     genus_dictionary = Dict{String, String}()
 
     for line in eachline(miRNA_reference)
@@ -899,37 +905,37 @@ end
 Function takes in mirBase mature miRNA fasta file with data from all available
 organisms and pulls out only the miRNA data pertaining to the target organism.
 """
-function CreateTargetOrganismFastaFile(Organism_Name::String)
+function create_target_organism_fasta_file(organism_name::String)
 
-    #Skip making species miRNA reference if it exists
-    bowtie2_reference_files = CaptureTargetFiles(".bt2")
+    # Skip making species miRNA reference if it exists
+    bowtie2_reference_files = capture_target_files(".bt2")
     if isempty(bowtie2_reference_files)
-        #Download miRBase mature miRNA sequence file
+        # Download miRBase mature miRNA sequence file
         wait(run(pipeline(`wget 
-                    https://www.mirbase.org/ftp/CURRENT/mature.fa.gz 
+                    https://www.mirbase.org/download_file/mature.fa
                     --no-check-certificate`
                     , devnull)
                     , wait = false
                 )
             )
 
-        #Create file with all genuses with miRBase annotations
-        GetGenusNames("mature.fa.gz")
+        # Create file with all genuses with miRBase annotations
+        get_genus_names("mature.fa")
 
-        #Sets the target or organism's genus and species for labeling the output file
-        organism_genus_name::String = first(split(Organism_Name, " "))
-        organism_species_name::String = last(split(Organism_Name, " "))
+        # Set the target or organism's genus and species for labeling the output file
+        organism_genus_name::String = first(split(organism_name, " "))
+        organism_species_name::String = last(split(organism_name, " "))
         target_genus_abbreviation = ""
         output_fasta_file_name = organism_genus_name * "_" * organism_species_name * ".fa"
         bowtie2_reference_name = organism_genus_name * "_" * organism_species_name
 
-        #Opens the IO streams and sets the output file names for the fasta and bowtie2 index
+        # Open the IO streams and sets the output file names for the fasta and bowtie2 index
         genus_file = open("mirBase_genus_list.txt", "r")
-        input_fasta_file = GZip.open("mature.fa.gz")
+        input_fasta_file = open("mature.fa")
         output_fasta_file = open(organism_genus_name * "_" * organism_species_name * ".fa", "w")
 
-        #Loops through file containing the genus of all the organisms with miRNA data
-        #If the target organism is in that list, the genus abbreviation is stored for use below
+        # Loop through file containing the genus of all the organisms with miRNA data
+        # If the target organism is in that list, the genus abbreviation is stored for use below
         for line in eachline(genus_file)
             if occursin(lowercase(organism_genus_name), lowercase(line))
                 target_genus_abbreviation = last(split(line, ","))
@@ -938,7 +944,7 @@ function CreateTargetOrganismFastaFile(Organism_Name::String)
         end
 
         #=
-        Loops through mirBase mature miRNA fasta looking for the header and sequence information
+        Loop through mirBase mature miRNA fasta looking for the header and sequence information
         for the target genus. If there's a match, that information is added to a new fasta file.
         Must convert RNA sequences in miRBase fasta to DNA.
         =#
@@ -957,7 +963,7 @@ function CreateTargetOrganismFastaFile(Organism_Name::String)
         close(genus_file)
 
         #=
-        Uses the newly created single organism fasta to build a bowtie2 index; will be used
+        Use the newly created single organism fasta to build a bowtie2 index; will be used
         for alignment with bowtie2 to determine miRNA count information.
         =#
         wait(run(pipeline(
@@ -969,60 +975,66 @@ function CreateTargetOrganismFastaFile(Organism_Name::String)
             )
         )
 
-        TrashRemoval("mirBase_genus_list.txt")
-        TrashRemoval("mature.fa.gz")
+        trash_removal("mirBase_genus_list.txt")
+        trash_removal("mature.fa")
     end
 end
 
 """
-    GenerateMiRNACounts(SAM_File::String)
+    generate_mirna_counts(input_sam_file::AbstractString)
 
-This function creates a DataFrame containing all aligned miRNA and the number of times they appear.
+This function creates a DataFrame containing all aligned miRNA and the number of times 
+they appear.
 
-The function takes the following arguments:
+# Returns
 
-* `SAM_File`: A string containing the path to the SAM file.
-
-The function returns a DataFrame with the following columns:
+A DataFrame with the following columns:
 
 * `name`: The name of the miRNA.
 * `count`: The number of times the miRNA appears in the SAM file.
 """
-function GenerateMiRNACounts(SAM_File::String)
-    miRNA_names = Vector{String}()
-    #Open the SAM file and read each line
-    open(SAM_File, "r") do sam_file
-        for line in eachline(sam_file)
-            miRNA_name = match(r"0\s+\K[a-z][a-z-A-Z0-9]+", line)
-            #Check if the line contains a miRNA name
-            if !isnothing(miRNA_name)
-                #Add the miRNA name to the list of miRNA names
-                push!(miRNA_names, miRNA_name.match)
+function generate_mirna_counts(input_sam_file::AbstractString)
+    miRNA_counts = Dict{String, Int64}()
+
+    # Open the input sam file
+    sam_file = open(SAM.Reader, input_sam_file)
+    record = SAM.Record()
+
+    # Go through each sequence in the sam file
+    while !eof(sam_file)
+        # Empty sam record to reduce memory usage
+        empty!(record)
+        read!(sam_file, record)
+
+        # Unmapped reads have no ID
+        if SAM.ismapped(record)
+            miRNA_name = SAM.refname(record)
+
+            # Check if the miRNA has already been added, update count if needed
+            if haskey(miRNA_counts, miRNA_name)
+                miRNA_counts[miRNA_name] += 1
+            else
+                miRNA_counts[miRNA_name] = 1
             end
         end
     end
 
-    #Count the number of times each miRNA name appears
-    miRNA_counts = countmap(miRNA_names)
-
-    #Create a DataFrame with the miRNA names and counts
-    miRNA_counts_dataframe = DataFrame([collect(keys(miRNA_counts))
-                                        , collect(values(miRNA_counts))]
-                                        , [:name, :count]
-                                        )
-
-    #Sort the DataFrame by count in descending order
-    sort!(miRNA_counts_dataframe, :2, rev = true)
+    # Create a DataFrame with the miRNA names and counts
+    miRNA_counts_dataframe = DataFrame(name = collect(keys(miRNA_counts))
+                                    , count = collect(values(miRNA_counts))
+                                    )
+    # Sort the DataFrame by miRNA count in descending order
+    sort!(miRNA_counts_dataframe, :count, rev = true)
 
     return miRNA_counts_dataframe
 end
 
 """
-    miRNADiscoveryCalculation(Trimmed_Fastq_Files::Vector{String}
-                                , Sample_Names::Vector{SubString{String}}
-                                , Bowtie2_Reference_Name::AbstractString
-                                , Organism_Name::AbstractString
-                                , Need_Reference::AbstractString
+    mirna_discovery_calculation(trimmed_fastq_files::Vector{String}
+                                , sample_names::Vector{SubString{String}}
+                                , bowtie2_reference_name::AbstractString
+                                , organism_name::AbstractString
+                                , need_reference::AbstractString
                                 )
 
 Align trimmed fastq files to the single organism miRNA bowtie2 reference. 
@@ -1031,7 +1043,7 @@ The bowtie2 output SAM is input into function to generate miRNA read counts.
 
 #Example
 ```julia
-julia> miRNADiscoveryCalculation(["sample1.cut.fastq","sample2.cut.fastq","sample3.cut.fastq"]
+julia> mirna_discovery_calculation(["sample1.cut.fastq","sample2.cut.fastq","sample3.cut.fastq"]
                                 , ["sample1", "sample2", "sample3"])
 3-element Vector{DataFrame}:
 469x2 DataFrame
@@ -1049,29 +1061,30 @@ julia> miRNADiscoveryCalculation(["sample1.cut.fastq","sample2.cut.fastq","sampl
  "sample3.miRNA.sam"
 ```
 """
-function miRNADiscoveryCalculation(Trimmed_Fastq_Files::Vector{String}
-                                    , Sample_Names::Vector{SubString{String}}
-                                    , Bowtie2_Reference_Name::AbstractString
-                                    , Organism_Name::AbstractString
-                                    , Need_Reference::AbstractString
+function mirna_discovery_calculation(trimmed_fastq_files::Vector{String}
+                                    , sample_names::Vector{SubString{String}}
+                                    , bowtie2_reference_name::AbstractString
+                                    , organism_name::AbstractString
+                                    , need_reference::AbstractString
                                     )
-    number_of_records = length(Trimmed_Fastq_Files)
-    progress_bar_update = ProgressBarUpdate(number_of_records
+    number_of_records = length(trimmed_fastq_files)
+    update_progress_bar = progress_bar_update(number_of_records
                                             , .5
                                             , "Calculating the number of miRNA present..."
                                             )
 
     vector_of_miRNA_counts_dfs = Vector{DataFrame}()
 
-    for (fastq_file, sample_name) in zip(Trimmed_Fastq_Files, Sample_Names)
+    for (fastq_file, sample_name) in zip(trimmed_fastq_files, sample_names)
 
-        if Need_Reference == "y"
-            bowtie2_reference = string("data/", Bowtie2_Reference_Name)
+        bowtie2_reference = 
+        if need_reference == "y"
+            string("data/", bowtie2_reference_name)
         else
-            bowtie2_reference = string("data/", join(split(Organism_Name), "_"))
+            string("data/", join(split(organism_name), "_"))
         end
 
-        #Align to miRBase reference
+        # Align to miRBase reference
         wait(run(pipeline(
                 `bowtie2
                 --norc
@@ -1084,26 +1097,26 @@ function miRNADiscoveryCalculation(Trimmed_Fastq_Files::Vector{String}
                 )
             )
 
-        counts_df = GenerateMiRNACounts(string(sample_name, ".miRNA.sam"))
+        counts_df = generate_mirna_counts(string(sample_name, ".miRNA.sam"))
         push!(vector_of_miRNA_counts_dfs, counts_df)        
-        next!(progress_bar_update)
+        next!(update_progress_bar)
     end
 
-    sam_files::Vector{String} = CaptureTargetFiles(".miRNA.sam")
+    sam_files::Vector{String} = capture_target_files(".miRNA.sam")
 
     return vector_of_miRNA_counts_dfs, sam_files
 end
 
 """
-    PlotMiRNACounts(miRNA_Counts_Dfs::Vector{DataFrame}
-                        , Sample_Names::Vector{SubString{String}}
+    plot_mirna_counts(mirna_counts_dfs::Vector{DataFrame}
+                        , sample_names::Vector{SubString{String}}
                         )
 
 Plot counts of the number of unique miRNA each sample aligned to.
 
 #Example
 ```julia
-julia> PlotMiRNACounts([sample1_counts_df,sample2_counts_df,sample3_counts_df]
+julia> plot_mirna_counts([sample1_counts_df,sample2_counts_df,sample3_counts_df]
                         , ["sample1", "sample2", "sample3"])
 3-element Vector{String}:
  "sample1_miRNA_counts.csv"
@@ -1111,45 +1124,45 @@ julia> PlotMiRNACounts([sample1_counts_df,sample2_counts_df,sample3_counts_df]
  "sample3_miRNA_counts.csv"
 ```
 """
-function PlotMiRNACounts(miRNA_Counts_Dfs::Vector{DataFrame}
-                        , Sample_Names::Vector{SubString{String}}
-                        )
-    number_of_records = length(miRNA_Counts_Dfs)
-    progress_bar_update = ProgressBarUpdate(number_of_records
+function plot_mirna_counts(mirna_counts_dfs::Vector{DataFrame}
+                            , sample_names::Vector{SubString{String}}
+                            )
+    number_of_records = length(mirna_counts_dfs)
+    update_progress_bar = progress_bar_update(number_of_records
                                             , .25
                                             , "Counting the miRNA in each sample..."
                                             )
 
-    for (miRNA_df, sample_name) in zip(miRNA_Counts_Dfs, Sample_Names)
-        #Calculate the total number of reads mapped to miRNA
+    for (miRNA_df, sample_name) in zip(mirna_counts_dfs, sample_names)
+        # Calculate the total number of reads mapped to miRNA
         total_mapped_reads = sum(miRNA_df[!, :count])
 
-        #Determine reads per million (RPM) for each sample
+        # Determine reads per million (RPM) for each sample
         RPM::DataFrame = combine(miRNA_df
         , :count => ByRow(miRNA_reads -> round(miRNA_reads / total_mapped_reads * 10^6, digits = 2)
         ))
 
-        #Remove "(unk)" from all miRNA names
+        # Remove "(unk)" from all miRNA names
         clean_miRNA_names::DataFrame = combine(miRNA_df
                                                 , :name => ByRow(name -> replace(name, "(unk)" => ""))
                                                 )
 
-        #Reconstitute dataframe with new miRNA names, miRNA counts, and RPM column
+        # Reconstitute dataframe with new miRNA names, miRNA counts, and RPM column
         miRNA_df::DataFrame = hcat(clean_miRNA_names, select(miRNA_df, :count), RPM)
 
-        #Rename column with miRNA names and RPM data
+        # Rename column with miRNA names and RPM data
         rename!(miRNA_df, :count_function => :RPM, :name_function => :name)
 
-        #Check column containing miRNA counts and adds miRNA above a set threshold
+        # Check column containing miRNA counts and adds miRNA above a set threshold
         threshold_of_one = length(filter(>=(1), miRNA_df[!, :count]))
         threshold_of_three = length(filter(>=(3), miRNA_df[!, :count]))
         threshold_of_five = length(filter(>=(5), miRNA_df[!, :count]))
         threshold_of_ten = length(filter(>=(10), miRNA_df[!, :count]))
 
-        #Barplot colors
+        # Barplot colors
         colors = [:grey88, :skyblue2, :peachpuff, :lightsalmon]
 
-        #Set x and y-axis values; y-axis is a vector containing each sample's counted miRNAs
+        # Set x and y-axis values; y-axis is a vector containing each sample's counted miRNAs
         x, y = 1:4, [threshold_of_one, threshold_of_three, threshold_of_five, threshold_of_ten]
 
         fig = Figure(resolution = (1800, 1200))
@@ -1163,7 +1176,7 @@ function PlotMiRNACounts(miRNA_Counts_Dfs::Vector{DataFrame}
                 )
         CairoMakie.ylims!(ax, 0, threshold_of_one * 1.05)
 
-        #Make sample barplot
+        # Make sample barplot
         barplot!(ax
                 , x
                 , y
@@ -1175,60 +1188,58 @@ function PlotMiRNACounts(miRNA_Counts_Dfs::Vector{DataFrame}
 
         save(string(sample_name, "_miRNA_counts.pdf"), fig)
 
-        #Write output file containing miRNA names, read count, and RPM data
+        # Write output file containing miRNA names, read count, and RPM data
         CSV.write(string(sample_name, "_miRNA_counts.csv"), miRNA_df)
         
-        next!(progress_bar_update)
+        next!(update_progress_bar)
     end
 
-    pdf_miRNA_files::Vector{String} = CaptureTargetFiles("_miRNA_counts.pdf")
+    pdf_miRNA_files::Vector{String} = capture_target_files("_miRNA_counts.pdf")
 
-    #Merge output PDFs into one file
+    # Merge output PDFs into one file
     merge_pdfs([pdf_miRNA_files...], "Comboseq_miRNA_plots.pdf")
     
-    #Remove individual sample plots
-    TrashRemoval(pdf_miRNA_files)
+    # Remove individual sample plots
+    trash_removal(pdf_miRNA_files)
 
-    miRNA_counts_files::Vector{String} = CaptureTargetFiles("_miRNA_counts.csv")
+    miRNA_counts_files::Vector{String} = capture_target_files("_miRNA_counts.csv")
 
     return miRNA_counts_files
 end
 
-function PlotMRNACounts(mRNA_Files::Vector{String}
-                        , Sample_Names::Vector{SubString{String}}
-                        )
-    number_of_records = length(mRNA_Files)
-    progress_bar_update = ProgressBarUpdate(number_of_records
+function plot_mrna_counts(salmon_mrna_counts::Vector{String}
+                            , sample_names::Vector{SubString{String}}
+                            )
+    number_of_records = length(salmon_mrna_counts)
+    update_progress_bar = progress_bar_update(number_of_records
                                             , .25
                                             , "Counting the mRNA in each sample..."
                                             )
 
-    for (file, sample_name) in zip(mRNA_Files, Sample_Names)
-        #Import Salmon output file containing mRNA information
+    for (file, sample_name) in zip(salmon_mrna_counts, sample_names)
+        # Import Salmon output file containing mRNA information
         mRNA_file::DataFrame = CSV.read(file, DataFrame)
 
-        #Checks column containing mRNA counts and adds mRNA above a set threshold
+        # Checks column containing mRNA counts and adds mRNA above a set threshold
         threshold_of_one = sum(mRNA_file[!,:TPM] .>= 1)
         threshold_of_ten = sum(mRNA_file[!,:TPM] .>= 10)
         threshold_of_one_hundred = sum(mRNA_file[!,:TPM] .>= 100)
         threshold_of_five_hundred = sum(mRNA_file[!,:TPM] .>= 500)
         threshold_of_one_thousand = sum(mRNA_file[!,:TPM] .>= 1000)
 
-        #Captures the name and TPM count of each mRNA with a TPM of at least 1
+        # Captures the name and TPM count of each mRNA with a TPM of at least 1
         mRNA_at_threshold_of_one = mRNA_file[mRNA_file[!,:TPM] .>= 1, [:Name, :TPM]]
 
-        #Sort output dataframe with mRNA TPM counts by the most highly expressed mRNAs
+        # Sort output dataframe with mRNA TPM counts by the most highly expressed mRNAs
         sorted_mRNA_at_threshold_of_one = sort(mRNA_at_threshold_of_one[!, [:Name, :TPM]]
                                                 , :TPM
                                                 , rev = true
                                                 )
 
-        sample_name = Sample_Names[sample_tracker]
-
-        #Barplot colors
+        # Barplot colors
         colors = [:burlywood, :lightsteelblue, :mistyrose2, :pink4, :grey80]
 
-        #Set x and y-axis values; y-axis is a vector containing each sample's counted mRNAs 
+        # Set x and y-axis values; y-axis is a vector containing each sample's counted mRNAs 
         x = 1:5
         y = [threshold_of_one
             , threshold_of_ten
@@ -1248,7 +1259,7 @@ function PlotMRNACounts(mRNA_Files::Vector{String}
                 )
         CairoMakie.ylims!(ax, 0, threshold_of_one * 1.05)
 
-        #Make sample barplot
+        # Make sample barplot
         barplot!(ax
                 , x
                 , y
@@ -1260,52 +1271,77 @@ function PlotMRNACounts(mRNA_Files::Vector{String}
 
         save(sample_name * "_mRNA_counts.pdf", fig)
 
-        #Write output file containing mRNA names and TPM data
+        # Write output file containing mRNA names and TPM data
         CSV.write(sample_name * "_mRNA_counts.csv", sorted_mRNA_at_threshold_of_one)
         
-        next!(progress_bar_update)
+        next!(update_progress_bar)
     end
 
-    pdf_mRNA_files::Vector{String} = CaptureTargetFiles("_mRNA_counts.pdf")
+    pdf_mRNA_files::Vector{String} = capture_target_files("_mRNA_counts.pdf")
 
-    #Merge output PDFs into one file
+    # Merge output PDFs into one file
     merge_pdfs([pdf_mRNA_files...], "Comboseq_mRNA_plots.pdf")
     
-    #Remove individual sample plots
-    TrashRemoval(pdf_mRNA_files)
+    # Remove individual sample plots
+    trash_removal(pdf_mRNA_files)
 
-    mRNA_counts_files::Vector{String} = CaptureTargetFiles("_mRNA_counts.csv")
+    mRNA_counts_files::Vector{String} = capture_target_files("_mRNA_counts.csv")
 
     return mRNA_counts_files
 end
 
 """
-Find all miRNAs the samples have in common. Calculate the reads per million reads (RPM).
+    find_common_mirnas(mirna_counts_files::Vector{String}
+                            , read_count_dict::Dict{String, Int64}
+                            , sample_names::Vector{SubString{String}}
+                            )
+
+Return the RNAs present in all samples, together with their counts and reads per million reads (RPM)
+or transcripts per million (TPM).
+
+# Arguments
+- `[mi/m]rna_counts_files`: A vector of files containing sample RNA counts.
+- `read_count_dict`: A dictionary where keys are sample names and values are the total number of reads 
+for the corresponding sample.
+- `sample_names`: A vector of sample names.
+
+# Returns
+- A Tuple of three items:
+    1. A list of RNAs that are common to all samples.
+    2. A list of dictionaries where each dictionary contains the RNA counts for one sample.
+    3. A list of dictionaries where each dictionary contains the RPM/TPM values for the miRNAs in one sample.
+
+# Example
+```julia
+julia> find_common_mirnas(["sample1_miRNA_counts.csv", "sample2_miRNA_counts.csv"]...,
+                        , Dict("sample1" => 6390314, "sample2" => 5000000, "sample3" => 7052928)
+                        , ["sample1", "sample2", "sample3"])
+```
 """
-function FindCommonRNAs(miRNA_Counts_Files::Vector{String}
-                        , Read_Count_Dict::Dict{String, Int64}
-                        , Sample_Names::Vector{SubString{String}}
-                        )
-    #Vector of dictionaries containing the miRNA counts from each sample
+function find_common_rnas(mirna_counts_files::Vector{String}
+                            , read_count_dict::Dict{String, Int64}
+                            , sample_names::Vector{SubString{String}}
+                            )
+    # Vector of dictionaries containing the miRNA counts from each sample
     miRNA_info = Vector{Dict{String, Int64}}()
     RPM_info = Vector{Dict{String, Number}}()
     full_miRNA_names_list = Vector{String}()
 
-    for (file, sample_name) in zip(miRNA_Counts_Files, Sample_Names)
-        miRNA_file::IOStream = open(file, "r")
+    for (file, sample_name) in zip(mirna_counts_files, sample_names)
+        miRNA_file = open(file, "r")
 
-        #Dictionaries to hold each miRNA and its associated read count
+        # Dictionaries to hold each miRNA and its associated read count
         sample_miRNA_counts_dictionary = Dict{String, Int64}()
         sample_miRNA_RPM_dictionary = Dict{String, Number}()
 
-        #Skip header line
+        # Skip header line
         readline(miRNA_file)
 
         for line in eachline(miRNA_file)
             split_line = split(line, ",")
             miRNA_count = parse(Int64, split_line[2])
             miRNA_name = first(split_line)
-            RPM = round(miRNA_count / (Read_Count_Dict[sample_name] / 10^6), digits = 4)
+            RPM = round(miRNA_count / (read_count_dict[sample_name] / 10^6), digits = 4)
 
             sample_miRNA_counts_dictionary[miRNA_name] = miRNA_count
             sample_miRNA_RPM_dictionary[miRNA_name] = RPM
@@ -1319,34 +1355,31 @@ function FindCommonRNAs(miRNA_Counts_Files::Vector{String}
         close(miRNA_file)
     end
 
-    #Count number each miRNA's occurances
+    # Count number each miRNA's occurances
     miRNA_names_dict = countmap(full_miRNA_names_list)
 
-    #Find miRNA present in all samples, .i.e. have counts equal to the number of samples analyzed
-    miRNAs_in_common = filter(miRNA -> last(miRNA) === length(Sample_Names), miRNA_names_dict) |> keys
+    # Find miRNA present in all samples, .i.e. have counts equal to the number of samples analyzed
+    miRNAs_in_common = filter(miRNA -> last(miRNA) === length(sample_names), miRNA_names_dict) |> keys
 
     return miRNAs_in_common, miRNA_info, RPM_info
 end
 
-"""
-Find all RNAs the samples have in common.
-"""
-function FindCommonRNAs(mRNA_Counts_Files::Vector{String}
-                        , Sample_Names::Vector{SubString{String}}
-                        )
-    #Vector of dictionaries containing the mRNA counts from each sample
+function find_common_rnas(mrna_counts_files::Vector{String}
+                            , sample_names::Vector{SubString{String}}
+                            )
+    # Vector of dictionaries containing the mRNA counts from each sample
     mRNA_info = Vector{Dict{String, Float64}}()
     TPM_info = Vector{Dict{String, Number}}()
     full_mRNA_names_list = Vector{String}()
 
-    for file in mRNA_Counts_Files
+    for file in mrna_counts_files
         mRNA_file::IOStream = open(file, "r")
 
-        #Dictionaries to hold each mRNA and its associated read count
+        # Dictionaries to hold each mRNA and its associated read count
         sample_mRNA_counts_dictionary = Dict{String, Float64}()
         sample_mRNA_TPM_dictionary = Dict{String, Number}()
 
-        #Skip header line
+        # Skip header line
         readline(mRNA_file)
 
         for line in eachline(mRNA_file)
@@ -1369,39 +1402,42 @@ function FindCommonRNAs(mRNA_Counts_Files::Vector{String}
         close(mRNA_file)
     end
 
-    #Count number each mRNA's occurances
+    # Count number each mRNA's occurances
     miRNA_names_dict = countmap(full_mRNA_names_list)
 
-    #Find miRNA present in all samples, .i.e. have counts equal to the number of samples analyzed
-    miRNAs_in_common = filter(miRNA -> last(miRNA) === length(Sample_Names), miRNA_names_dict) |> keys
+    # Find miRNA present in all samples, .i.e. have counts equal to the number of samples analyzed
+    miRNAs_in_common = filter(miRNA -> last(miRNA) === length(sample_names), miRNA_names_dict) |> keys
 
     return miRNAs_in_common, mRNA_info, TPM_info
 end
 
-function WriteCommonRNAFile(miRNA_Names::Base.KeySet{String, Dict{String, Int64}}
-                            , miRNA_Info::Vector{Dict{String, Int64}}
-                            , RPM_Info::Vector{Dict{String, Number}}
-                            , Sample_Names::Vector{SubString{String}}
-                            ; RNA_Type="miRNA"
-                            )
+"""
+Write RNAs all samples have in common to output file.
+"""
+function write_common_rna_file(mirna_names::Base.KeySet{String, Dict{String, Int64}}
+                                , mirna_info::Vector{Dict{String, Int64}}
+                                , rpm_info::Vector{Dict{String, Number}}
+                                , sample_names::Vector{SubString{String}}
+                                ; rna_type="miRNA"
+                                )
 
-    for (index, sample) in enumerate(Sample_Names)
+    for (index, sample) in enumerate(sample_names)
         common_miRNA_file::IOStream = open(string(sample, "_common_miRNAs.tsv"), "w")
         common_miRNA_file_RPM::IOStream = open(string(sample, "_common_miRNAs_RPM.tsv"), "w")
 
         if index == 1
-            write(common_miRNA_file, string(RNA_Type, "\t", sample, "\n"))
-            write(common_miRNA_file_RPM, string(RNA_Type, "\t", sample, "\n"))
-            for miRNA in miRNA_Names
-                write(common_miRNA_file, string(miRNA, "\t", miRNA_Info[index][miRNA], "\n"))
-                write(common_miRNA_file_RPM, string(miRNA, "\t", RPM_Info[index][miRNA], "\n"))
+            write(common_miRNA_file, string(rna_type, "\t", sample, "\n"))
+            write(common_miRNA_file_RPM, string(rna_type, "\t", sample, "\n"))
+            for miRNA in mirna_names
+                write(common_miRNA_file, string(miRNA, "\t", mirna_info[index][miRNA], "\n"))
+                write(common_miRNA_file_RPM, string(miRNA, "\t", rpm_info[index][miRNA], "\n"))
             end
         else
             write(common_miRNA_file, string(sample, "\n"))
             write(common_miRNA_file_RPM, string(sample, "\n"))
-            for miRNA in miRNA_Names
-                write(common_miRNA_file, string(miRNA_Info[index][miRNA], "\n"))
-                write(common_miRNA_file_RPM, string(RPM_Info[index][miRNA], "\n"))
+            for miRNA in mirna_names
+                write(common_miRNA_file, string(mirna_info[index][miRNA], "\n"))
+                write(common_miRNA_file_RPM, string(rpm_info[index][miRNA], "\n"))
             end
         end
 
@@ -1409,44 +1445,44 @@ function WriteCommonRNAFile(miRNA_Names::Base.KeySet{String, Dict{String, Int64}
         close(common_miRNA_file_RPM)
     end
 
-    common_files = CaptureTargetFiles("_common_miRNAs.tsv")
-    common_RPM_files = CaptureTargetFiles("_common_miRNAs_RPM.tsv")
+    common_files = capture_target_files("_common_miRNAs.tsv")
+    common_RPM_files = capture_target_files("_common_miRNAs_RPM.tsv")
 
-    #Combine all the separate common miRNA files into one file
+    # Combine all the separate common miRNA files into one file
     run(pipeline(`paste $common_files`, stdout = "Common_miRNAs.tsv"))
     run(pipeline(`paste $common_RPM_files`, stdout = "Common_RPM_miRNAs.tsv"))
 
-    #Run principal component analysis and UMAP on common miRNA
-    PlotClustering("Common_miRNAs.tsv", RNA_Type)
+    # Run principal component analysis and UMAP on common miRNA
+    plot_clustering("Common_RPM_miRNAs.tsv", rna_type)
 
-    TrashRemoval(common_files)
-    TrashRemoval(common_RPM_files)
+    trash_removal(common_files)
+    trash_removal(common_RPM_files)
 end
 
-function WriteCommonRNAFile(mRNA_Names::Base.KeySet{String, Dict{String, Int64}}
-                            , mRNA_Info::Vector{Dict{String, Float64}}
-                            , TPM_Info::Vector{Dict{String, Number}}
-                            , Sample_Names::Vector{SubString{String}}
-                            ; RNA_Type="mRNA"
-                            )
+function write_common_rna_file(mrna_names::Base.KeySet{String, Dict{String, Int64}}
+                                , mrna_info::Vector{Dict{String, Float64}}
+                                , tpm_info::Vector{Dict{String, Number}}
+                                , sample_names::Vector{SubString{String}}
+                                ; rna_type="mRNA"
+                                )
     
-    for (index, sample) in enumerate(Sample_Names)
+    for (index, sample) in enumerate(sample_names)
         common_mRNA_file::IOStream = open(string(sample, "_common_mRNAs.tsv"), "w")
         common_mRNA_file_TPM::IOStream = open(string(sample, "_common_mRNAs_TPM.tsv"), "w")
 
         if index == 1
-            write(common_mRNA_file, string(RNA_Type, "\t", sample, "\n"))
-            write(common_mRNA_file_TPM, string(RNA_Type, "\t", sample, "\n"))
-            for mRNA in mRNA_Names
-                write(common_mRNA_file, string(mRNA, "\t", mRNA_Info[index][mRNA], "\n"))
-                write(common_mRNA_file_TPM, string(mRNA, "\t", TPM_Info[index][mRNA], "\n"))
+            write(common_mRNA_file, string(rna_type, "\t", sample, "\n"))
+            write(common_mRNA_file_TPM, string(rna_type, "\t", sample, "\n"))
+            for mRNA in mrna_names
+                write(common_mRNA_file, string(mRNA, "\t", mrna_info[index][mRNA], "\n"))
+                write(common_mRNA_file_TPM, string(mRNA, "\t", tpm_info[index][mRNA], "\n"))
             end
         else
             write(common_mRNA_file, string(sample, "\n"))
             write(common_mRNA_file_TPM, string(sample, "\n"))
-            for mRNA in mRNA_Names
-                write(common_mRNA_file, string(mRNA_Info[index][mRNA], "\n"))
-                write(common_mRNA_file_TPM, string(TPM_Info[index][mRNA], "\n"))
+            for mRNA in mrna_names
+                write(common_mRNA_file, string(mrna_info[index][mRNA], "\n"))
+                write(common_mRNA_file_TPM, string(tpm_info[index][mRNA], "\n"))
             end
         end
 
@@ -1454,66 +1490,86 @@ function WriteCommonRNAFile(mRNA_Names::Base.KeySet{String, Dict{String, Int64}}
         close(common_mRNA_file_TPM)
     end
 
-    common_files = CaptureTargetFiles("_common_mRNAs.tsv")
-    common_TPM_files = CaptureTargetFiles("_common_mRNAs_TPM.tsv")
+    common_files = capture_target_files("_common_mRNAs.tsv")
+    common_TPM_files = capture_target_files("_common_mRNAs_TPM.tsv")
 
-    #Combine all the separate common mRNA files into one file
+    # Combine all the separate common mRNA files into one file
     run(pipeline(`paste $common_files`, stdout = "Common_mRNAs.tsv"))
     run(pipeline(`paste $common_TPM_files`, stdout = "Common_TPM_mRNAs.tsv"))
 
-    #Run principal component analysis and UMAP on common mRNA
-    PlotClustering("Common_mRNAs.tsv", RNA_Type)
+    # Run principal component analysis and UMAP on common mRNA
+    plot_clustering("Common_TPM_mRNAs.tsv", rna_type)
 
-    TrashRemoval(common_files)
-    TrashRemoval(common_TPM_files)
+    trash_removal(common_files)
+    trash_removal(common_TPM_files)
 end
 
 """
-Plot principal component analysis (PCA) and RNA counts UMAP of all libraries if possible.
+    plot_clustering(Common_miRNA_File::String)
+
+Generates Principal Component Analysis (PCA) and Uniform Manifold Approximation and 
+Projection (UMAP) plots for libraries given a common RNA file.
+
+This function performs the following steps:
+1. Reads the common RNA file and creates a DataFrame.
+2. Extracts sample names and [mi/m]RNA names.
+3. Ensures that there are at least two samples and more than one miRNA present in the dataset.
+4. Transforms the data using PCA and prepares it for plotting.
+5. If there are at least two principal components, plots the PCA and saves it as "common_[mi/m]RNA_PCA.png".
+6. If there are at least three principal components, performs UMAP dimensionality reduction and clustering using K-medoids.
+7. Plots the UMAP and saves it as "common_[mi/m]RNA_UMAP.png".
+8. Writes the PCA and UMAP information to separate CSV files for cluster tracking.
+
+# Arguments
+- `Common_[mi/m]RNA_File::String`: Path to the common RNA RPM/TPM file.
+
+# Outputs
+- Creates and saves PCA and UMAP plots as "common_[mi/m]RNA_PCA.png" and "common_[mi/m]RNA_UMAP.png".
+- Writes PCA and UMAP information to "PCA_information.csv" and "UMAP_information.csv".
 """
-function PlotClustering(Common_RNA_File::String, RNA_Type::String)
-    common_RNA_counts = DataFrame(CSV.File(Common_RNA_File))
-    sample_names = DataFrames.names(common_RNA_counts, Not([Symbol("$RNA_Type")]))
-    RNA_names = common_RNA_counts[!, Symbol("$RNA_Type")]
+function plot_clustering(common_rna_file::String, rna_type::String)
+    common_RNA_counts = DataFrame(CSV.File(common_rna_file))
+    sample_names = DataFrames.names(common_RNA_counts, Not([Symbol("$rna_type")]))
+    RNA_names = common_RNA_counts[!, Symbol("$rna_type")]
 
-    #There must be at least two samples in order to perform the principal component analysis
-    #Must also have at least one RNA in common
+    # There must be at least two samples in order to perform the principal component analysis
+    # Must also have at least one RNA in common
     if last(size(common_RNA_counts)) > 2 && first(size(common_RNA_counts)) > 1
-        common_RNA_counts_matrix = Matrix{Float64}(select(common_RNA_counts, Not([Symbol("$RNA_Type")])))
+        common_RNA_counts_matrix = Matrix{Float64}(select(common_RNA_counts, Not([Symbol("$rna_type")])))
 
-        #Make PCA covariance matrix for PCA plot
+        # Make PCA covariance matrix for PCA plot
         PCA_matrix = fit(PCA, common_RNA_counts_matrix; maxoutdim = 20)
         transformed_counts = predict(PCA_matrix, common_RNA_counts_matrix)
 
-        #Make PCA covariance matrix for UMAP plot
+        # Make PCA covariance matrix for UMAP plot
         UMAP_PCA_matrix = fit(PCA, common_RNA_counts_matrix'; maxoutdim = 20)
         transposed_transformed_counts = predict(UMAP_PCA_matrix, common_RNA_counts_matrix')
 
-        #Plot PCA only if there are at least two principal components
+        # Plot PCA only if there are at least two principal components
         if first(size(transformed_counts)) >= 2
             sample_name_df = DataFrame("samples" => sample_names)
-            RNA_names_df = DataFrame("$RNA_Type" => RNA_names)
+            RNA_names_df = DataFrame("$rna_type" => RNA_names)
 
-            #Write PCA information to file for cluster tracking
+            # Write PCA information to file for cluster tracking
             PCA_values = hcat(sample_name_df, DataFrame(transformed_counts[1:2, :]', ["PC1", "PC2"]))
             CSV.write("PCA_information.csv", PCA_values)
             
-            #Plot PCA
+            # Plot PCA
             Plots.scatter(size = (1200, 800), dpi = 300, titlefont = (16, "Computer Modern")
-                            , xlabel = "PC1", ylabel = "PC2", title = "Common $RNA_Type: PCA"
+                            , xlabel = "PC1", ylabel = "PC2", title = "Common $rna_type: PCA"
                             , transformed_counts[1, :], transformed_counts[2, :]
                             , left_margin = 23mm, right_margin = 8mm, bottom_margin = 8mm
                             , leg = false
                             )
-           savefig(string("common_", RNA_Type, "_PCA.png"))
+           savefig(string("common_", rna_type, "_PCA.png"))
         end
         
-        #Plot UMAP only if there are at least three principal components
+        # Plot UMAP only if there are at least three principal components
         if first(size(transposed_transformed_counts)) >= 3
             sample_name_df = DataFrame("samples" => sample_names)
-            RNA_names_df = DataFrame("$RNA_Type" => RNA_names)
+            RNA_names_df = DataFrame("$rna_type" => RNA_names)
 
-            #Create low dimensional embedding for UMAP
+            # Create low dimensional embedding for UMAP
             near_neighbors = first(size(common_RNA_counts_matrix)) - 1
             if near_neighbors < 15
                 embedding = umap(transposed_transformed_counts
@@ -1529,7 +1585,7 @@ function PlotClustering(Common_RNA_File::String, RNA_Type::String)
                                 )
             end
 
-            #Write UMAP information to file for cluster tracking
+            # Write UMAP information to file for cluster tracking
             UMAP_values = hcat(RNA_names_df, DataFrame(embedding', ["UMAP1", "UMAP2"]))
             CSV.write("UMAP_information.csv", UMAP_values)
 
@@ -1540,14 +1596,14 @@ function PlotClustering(Common_RNA_File::String, RNA_Type::String)
             distance_matrix = pairwise(Euclidean(), embedding, embedding)
             kmedoids_cluster_colors = kmedoids(distance_matrix, first(size(transposed_transformed_counts)))
             Plots.scatter(size = (1200, 800), embedding[1, :], embedding[2, :]
-                            , title="Common $RNA_Type: UMAP", left_margin = 13mm
+                            , title="Common $rna_type: UMAP", left_margin = 13mm
                             , bottom_margin = 10mm, dpi = 300
                             , marker_z = kmedoids_cluster_colors.assignments
                             , color = :lighttest, xlabel = "UMAP1", ylabel = "UMAP2"
                             , titlefont = (16, "Computer Modern"), leg = false
                             , markersize = 9, markerstrokewidth = 0.1
                             )
-            savefig(string("common_", RNA_Type, "_UMAP.png"))
+            savefig(string("common_", rna_type, "_UMAP.png"))
         end
     end
 end
@@ -1555,42 +1611,41 @@ end
 """
 Spot remove unecessary intermediate files.
 """
-function TrashRemoval(Files_to_Delete::Vector{String})
+function trash_removal(Files_to_Delete::Vector{String})
     for file in Files_to_Delete
         rm(file)
     end
 end
 
-function TrashRemoval(File_to_Delete::String)
+function trash_removal(File_to_Delete::String)
     rm(File_to_Delete)
 end
 
 """
 Remove all intermediate files.
 """
-function GarbageCollection()
+function remove_intermediate_files()
     Files_to_Delete = Set(vcat(
-    CaptureTargetFiles("deduplication_statistics")
-    ,CaptureTargetFiles(".bt2")
-    ,CaptureTargetFiles(".miRNA.")
-    ,CaptureTargetFiles("v22_cluster")
-    ,CaptureTargetFiles(".sam")
-    ,CaptureTargetFiles(".bam")
-    ,CaptureTargetFiles("quant")
-    ,CaptureTargetFiles("cut")
+    capture_target_files("deduplication_statistics")
+    ,capture_target_files(".bt2")
+    ,capture_target_files(".miRNA.")
+    ,capture_target_files("v22_cluster")
+    ,capture_target_files(".sam")
+    ,capture_target_files(".bam")
+    ,capture_target_files("cut")
     ))
 
     for file in Files_to_Delete
         rm(file)
     end
 
-    json_files = CaptureTargetFiles(".json")
-    TrashRemoval(json_files)
+    json_files = capture_target_files(".json")
+    trash_removal(json_files)
 end
 
-function julia_main()::Cint
+function main()
 
-    #Say hello Issac!
+    # Say hello Issac!
     run(`echo " "`)
     run(`echo -e "\e[0;36m&&&&&&&&&...&&&&......&&&..........&"`)
     run(`echo -e   "&&&&&&&&&...&&&&&.....&&&........&&&"`)
@@ -1632,49 +1687,48 @@ function julia_main()::Cint
 
     print("Would you like to download reference files for the Salmon alignment? (y/n): ")
     need_reference = readline()
-    Fastqs = CaptureTargetFiles("_R1_001.fastq.gz")
-    Sample_Names = map(sample -> first(split(sample, "_")), Fastqs)
-    Salmon_Reference, Organism_Name = CreateReferenceFile(need_reference)
-    Read_Count_Dict, Dimer_Count_Dict, Q_Score_Dict = ParseFastqFiles(Fastqs, Sample_Names)
-    Trimmed_Fastqs = TrimAdapters(Fastqs, Sample_Names)
-    miRNA_Counts_Dfs, SAM_Files = miRNADiscoveryCalculation(Trimmed_Fastqs
-                                                            , Sample_Names
-                                                            , Salmon_Reference
-                                                            , Organism_Name
+    fastqs = capture_target_files("_R1_001.fastq.gz")
+    sample_names = map(sample -> first(split(sample, "_")), fastqs)
+    salmon_reference, organism_name = create_reference_file(need_reference)
+    read_count_dict, dimer_count_dict, q_score_dict = parse_fastq_files(fastqs, sample_names)
+    trimmed_fastq_files = trim_adapters(fastqs, sample_names)
+    mirna_counts_dfs, sam_files = mirna_discovery_calculation(trimmed_fastq_files
+                                                            , sample_names
+                                                            , salmon_reference
+                                                            , organism_name
                                                             , need_reference
                                                             )
-    miRNA_Counts_Files = PlotMiRNACounts(miRNA_Counts_Dfs, Sample_Names)
-    Salmon_mRNA_Counts = AlignWithSalmon(Trimmed_Fastqs
-                                        , Salmon_Reference
-                                        , Sample_Names
+    mirna_counts_files = plot_mirna_counts(mirna_counts_dfs, sample_names)
+    salmon_mrna_counts = align_with_salmon(trimmed_fastq_files
+                                        , salmon_reference
+                                        , sample_names
                                         , need_reference
                                         )
-    mRNA_Counts_Files = PlotMRNACounts(Salmon_mRNA_Counts, Sample_Names)
-    Length_Files = CalculateReadLengthDistribution(SAM_Files, Sample_Names)
-    PlotFragmentLengths(Length_Files, Sample_Names)
-    Metrics_File = CalculateSalmonMetrics(Trimmed_Fastqs
-                                        , Read_Count_Dict
-                                        , Sample_Names
-                                        , Dimer_Count_Dict
-                                        , Q_Score_Dict
+    mrna_counts_files = plot_mrna_counts(salmon_mrna_counts, sample_names)
+    length_files = calculate_read_length_distribution(sam_files, sample_names)
+    plot_fragment_lengths(length_files, sample_names)
+    metrics_file = calculate_salmon_metrics(trimmed_fastq_files
+                                        , read_count_dict
+                                        , sample_names
+                                        , dimer_count_dict
+                                        , q_score_dict
                                         )
-    PlotMetrics(Metrics_File, Sample_Names)
-    MakeMetricsViolinPlot(Metrics_File)
-    Full_miRNA_Names_List, miRNA_Info, RPM_Info = FindCommonRNAs(miRNA_Counts_Files
-                                                                , Read_Count_Dict
-                                                                , Sample_Names
+    plot_metrics(metrics_file, sample_names)
+    make_metrics_violin_plot(metrics_file)
+    Full_miRNA_Names_List, mirna_info, rpm_info = find_common_rnas(mirna_counts_files
+                                                                , read_count_dict
+                                                                , sample_names
                                                                 )
-    WriteCommonRNAFile(Full_miRNA_Names_List, miRNA_Info, RPM_Info, Sample_Names, RNA_Type="miRNA")
-    Full_mRNA_Names_List, mRNA_Info, TPM_Info = FindCommonRNAs(mRNA_Counts_Files
-                                                                , Sample_Names
+    write_common_rna_file(Full_miRNA_Names_List, mirna_info, rpm_info, sample_names, rna_type="miRNA")
+    full_mrna_names_list, mrna_info, tpm_info = find_common_rnas(mrna_counts_files
+                                                                , sample_names
                                                                 )
-    WriteCommonRNAFile(Full_mRNA_Names_List, mRNA_Info, TPM_Info, Sample_Names, RNA_Type="mRNA")
-    GarbageCollection()
+    write_common_rna_file(full_mrna_names_list, mrna_info, tpm_info, sample_names, rna_type="mRNA")
+    remove_intermediate_files()
     println(" ")
     println("Analysis Finished")
     println(" ")
     
-    return 0
 end
 
-end
+main()
