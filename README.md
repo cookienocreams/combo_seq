@@ -55,7 +55,8 @@ If you do not have a Salmon reference already made and would like the program to
 Note this can take a while for large genomes.
 
 ```julia
-/home/user/combo_seq_app/bin/combo_seq --transcript https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_44/gencode.v44.transcripts.fa.gz \
+/home/user/combo_seq_app/bin/combo_seq --need-reference \
+                                       --transcript https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_44/gencode.v44.transcripts.fa.gz \
                                        --genome https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_44/GRCh38.p14.genome.fa.gz
 ```
 
