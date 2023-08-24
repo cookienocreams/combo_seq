@@ -45,7 +45,7 @@ The app can be run using the `combo_seq` executable in the `/home/user/combo_seq
 
 ## Basic Usage
 
-In a folder containing Combo-Seq fastq files and a miRNA reference `/home/user/miRNA` and a Salmon reference `/home/user/hg38_mRNA` use:
+In a folder containing Combo-Seq fastq files and a bowtie2 miRNA reference `/home/user/miRNA` and a Salmon reference `/home/user/hg38_mRNA` use:
 
 ```julia
 /home/user/combo_seq_app/bin/combo_seq --mrna /home/user/hg38_mRNA --mirna /home/user/miRNA
