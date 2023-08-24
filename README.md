@@ -63,5 +63,5 @@ Note this can take a while for large genomes.
 That will make a Salmon reference called `hsa` located in the `data` folder where the program was run. It can be used in subsequent runs as follows:
 
 ```julia
-/home/user/combo_seq_app/bin/combo_seq --mrna /home/user/combo/data/hsa
+/home/user/combo_seq_app/bin/combo_seq --mrna /home/user/combo_seq/data/hsa
 ```
