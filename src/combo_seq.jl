@@ -123,12 +123,12 @@ function get_read_q_score!(line::String, q_score_list::Vector{Float64})
 end
 
 """
-Make transcriptome bowtie2 reference to align fastqs with.
+Make miRNA bowtie2 reference to align fastqs with.
 """
-function make_bowtie2_reference(transcriptome_fasta::String, organism_name::AbstractString)
+function make_bowtie2_reference(fasta::String, organism_name::AbstractString)
     wait(run(pipeline(
             `bowtie2-build 
-            $transcriptome_fasta 
+            $fasta 
             $organism_name`)
             , wait = false
             )
@@ -268,7 +268,7 @@ function create_reference_file(need_reference::Bool
 
         # Create reference Salmon and Bowtie2 databases for use in further analyses
         make_salmon_reference(organism_name, unzipped_reference_transcriptome_fasta)
-        make_bowtie2_reference(unzipped_reference_transcriptome_fasta, organism_name)
+        make_bowtie2_reference(fasta_file, organism_name)
 
         cd("../")
     else
@@ -1618,11 +1618,6 @@ function parse_commandline()
         "--need-reference", "-r"
             help = "Flag for specifying if a reference needs to be downloaded or not."
             action = :store_true
-        "--mirna", "-m"
-            help = "The full path to the bowtie2 miRNA reference the samples will be aligned to, \
-            e.g., /home/user/miRNA."
-            arg_type = String
-            default = "data/hsa"
         "--mrna", "-M"
             help = "The full path to the Salmon mRNA reference the samples will be aligned to, \
             e.g., /home/user/hg38_mRNA."
@@ -1662,6 +1657,13 @@ function julia_main()::Cint
     # Check if user specified a Salmon reference   
     if isnothing(parsed_args["mrna"]) && !parsed_args["need-reference"]
         throw(ArgumentError("No Salmon reference specified"))
+    end
+
+    # Check if user specified a miRNA reference
+    if parsed_args["fasta"] == "data/mirgene_all.fas"
+        if !isfile("data/mirgene_all.fas")
+            throw(ArgumentError("No miRNA reference found"))
+        end
     end
 
     # Say hello Issac!
@@ -1711,7 +1713,7 @@ function julia_main()::Cint
                                             , !isnothing(parsed_args["transcript"]) ? parsed_args["transcript"] : "nothing"
                                             , !isnothing(parsed_args["genome"]) ? parsed_args["genome"] : "nothing"
                                             , parsed_args["organism"]
-                                            , !isnothing(parsed_args["fasta"]) ? parsed_args["fasta"] : "nothing"
+                                            , parsed_args["fasta"]
                                             )
     read_count_dict, dimer_count_dict, q_score_dict = parse_fastq_files(fastqs, sample_names)
     trimmed_fastq_files = trim_adapters(fastqs, sample_names)
