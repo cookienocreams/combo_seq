@@ -1627,7 +1627,6 @@ function parse_commandline()
             help = "The full path to the Salmon mRNA reference the samples will be aligned to, \
             e.g., /home/user/hg38_mRNA."
             arg_type = String
-            required = true
         "--fasta", "-f"
             help = "The full mature miRNA fasta file."
             arg_type = String
@@ -1659,6 +1658,11 @@ function julia_main()::Cint
 
     # Parse command line arguments
     parsed_args = parse_commandline()
+
+    # Check if user specified a Salmon reference   
+    if isnothing(parsed_args["mrna"]) && !parsed_args["need-reference"]
+        throw(ArgumentError("No Salmon reference specified"))
+    end
 
     # Say hello Issac!
     run(`echo " "`)
