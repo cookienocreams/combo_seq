@@ -35,7 +35,7 @@ using PackageCompiler
 PackageCompiler.create_app("./", "/home/user/combo_seq_app", incremental=true, precompile_execution_file="./src/combo_seq.jl", include_lazy_artifacts=true)
 ```
 
-There are a few options that can be changed if desired. Use `-h` or `--help` flags to see options.
+There are a few options that can be changed if desired. Use `-h` or `--help` to see help with descriptions of options.
 
 ```bash
 /home/user/combo_seq_app/bin/combo_seq --help
