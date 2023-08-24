@@ -43,7 +43,7 @@ There are a few options that can be changed if desired. Use `-h` or `--help` to 
 
 The app can be run using the `combo_seq` executable in the `/home/user/combo_seq_app/bin` folder in a folder containing fasta to be analyzed.
 
-## Basic Usage
+## Basic usage
 
 In a folder containing Combo-Seq fastq files and a bowtie2 miRNA reference `/home/user/miRNA` and a Salmon reference `/home/user/hg38_mRNA` use:
 
