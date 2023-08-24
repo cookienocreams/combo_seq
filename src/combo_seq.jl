@@ -142,6 +142,7 @@ function make_salmon_reference(organism_name::String, transcriptome_fasta::Strin
     # Remove extra header lines from gencode fasta file if one is used
     for line in eachline(transcriptome_fasta)
         if occursin("ENST", line) 
+            println("Starting to make salmon reference, this could take a while...")
             wait(run(pipeline(
                     `salmon 
                     index 
@@ -152,10 +153,12 @@ function make_salmon_reference(organism_name::String, transcriptome_fasta::Strin
                     --decoys salmon_decoys.txt 
                     --gencode`)
                     , wait = false
-                    )
                 )
+            )
+            println("Finished making salmon reference")
             break
-        else 
+        else
+            println("Starting to make salmon reference, this could take a while...")
             wait(run(pipeline(
                     `salmon 
                     index 
@@ -165,8 +168,9 @@ function make_salmon_reference(organism_name::String, transcriptome_fasta::Strin
                     --threads 12
                     --decoys salmon_decoys.txt`)
                     , wait = false
-                    )
                 )
+            )
+            println("Finished making salmon reference")
             break
         end
     end
