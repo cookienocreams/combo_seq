@@ -178,7 +178,10 @@ end
 """
 Make Salmon reference for mRNA alignment.
 """
-function make_salmon_reference(organism_name::String, transcriptome_fasta::String)
+function make_salmon_reference(organism_name::String
+                                , transcriptome_fasta::String
+                                , cores::Int
+                                )
     # Remove extra header lines from gencode fasta file if one is used
     for line in eachline(transcriptome_fasta)
         if occursin("ENST", line) 
@@ -189,7 +192,7 @@ function make_salmon_reference(organism_name::String, transcriptome_fasta::Strin
                     -i data/$organism_name 
                     --transcripts gentrome.fa
                     -k 19 
-                    --threads 12
+                    --threads $cores
                     --decoys salmon_decoys.txt 
                     --gencode`)
                     , wait = false
@@ -205,7 +208,7 @@ function make_salmon_reference(organism_name::String, transcriptome_fasta::Strin
                     -i data/$organism_name 
                     --transcripts gentrome.fa
                     -k 19 
-                    --threads 12
+                    --threads $cores
                     --decoys salmon_decoys.txt`)
                     , wait = false
                 )
@@ -226,6 +229,7 @@ function create_reference_file(need_reference::Bool
                                 , reference_fasta::String
                                 , organism_name::String
                                 , fasta_file::String
+                                , cores::Int
                                 )
 
     if need_reference
@@ -304,7 +308,7 @@ function create_reference_file(need_reference::Bool
         end
 
         # Create reference Salmon and Bowtie2 databases for use in further analyses
-        make_salmon_reference(organism_name, unzipped_reference_transcriptome_fasta)
+        make_salmon_reference(organism_name, unzipped_reference_transcriptome_fasta, cores)
         make_bowtie2_reference(fasta_file, organism_name)
 
         trash_removal("gentrome.fa")
@@ -561,6 +565,7 @@ Use aligned SAM files to create a read length distribution file.
 """
 function calculate_read_length_distribution(sam_files::Vector{String}
                                             , sample_names::Vector{SubString{String}}
+                                            , cores::Int
                                             )
     number_of_records = length(sam_files)
     update_progress_bar = progress_bar_update(number_of_records
@@ -578,7 +583,7 @@ function calculate_read_length_distribution(sam_files::Vector{String}
             read(pipeline(
                 `samtools 
                 stats 
-                -@ 12
+                -@ $cores
                 $sam_file`
                 , `grep ^RL`
                 , `cut -f 2-`)
@@ -1068,6 +1073,7 @@ julia> mirna_discovery_calculation(["sample1.cut.fastq","sample2.cut.fastq","sam
 function mirna_discovery_calculation(trimmed_fastq_files::Vector{String}
                                     , sample_names::Vector{SubString{String}}
                                     , reference::AbstractString
+                                    , cores::Int
                                     )
     number_of_records = length(trimmed_fastq_files)
     update_progress_bar = progress_bar_update(number_of_records
@@ -1083,7 +1089,7 @@ function mirna_discovery_calculation(trimmed_fastq_files::Vector{String}
         wait(run(pipeline(
                 `bowtie2
                 --norc
-                --threads 12
+                --threads $cores
                 -x data/$reference
                 -U $fastq_file
                 -S $sample_name.miRNA.sam`
@@ -1686,7 +1692,7 @@ function parse_commandline()
     # Create a Config instance from parsed arguments
     config = Config(
         get(args, "need_reference", false),
-        get(args, "mrna", ""),
+        get(args, "mrna", nothing),
         get(args, "fasta", "data/mirgene_all.fas"),
         get(args, "transcript", nothing),
         get(args, "genome", nothing),
@@ -1750,12 +1756,14 @@ function julia_main()::Cint
                                             , !isnothing(config.genome) ? config.genome : "nothing"
                                             , config.organism
                                             , config.fasta
+                                            , config.threads
                                             )
     read_count_dict, dimer_count_dict, q_score_dict = parse_fastq_files(fastqs, sample_names)
     trimmed_fastq_files = trim_adapters(fastqs, sample_names)
     mirna_counts_dfs, sam_files = mirna_discovery_calculation(trimmed_fastq_files
                                                             , sample_names
                                                             , organism_name
+                                                            , config.threads
                                                             )
     mirna_counts_files = plot_mirna_counts(mirna_counts_dfs, sample_names)
     salmon_mrna_counts = align_with_salmon(trimmed_fastq_files
@@ -1764,7 +1772,7 @@ function julia_main()::Cint
                                         , need_reference
                                         )
     mrna_counts_files = plot_mrna_counts(salmon_mrna_counts, sample_names)
-    length_files = calculate_read_length_distribution(sam_files, sample_names)
+    length_files = calculate_read_length_distribution(sam_files, sample_names, config.threads)
     plot_fragment_lengths(length_files, sample_names)
     metrics_file = calculate_salmon_metrics(trimmed_fastq_files
                                         , read_count_dict
