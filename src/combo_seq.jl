@@ -270,6 +270,10 @@ function create_reference_file(need_reference::Bool
         make_salmon_reference(organism_name, unzipped_reference_transcriptome_fasta)
         make_bowtie2_reference(fasta_file, organism_name)
 
+        trash_removal("gentrome.fa")
+        trash_removal(unzipped_reference_fasta_name)
+        trash_removal(unzipped_reference_transcriptome_fasta)
+
         cd("../")
     else
         !isdir("data") && mkdir("data")
