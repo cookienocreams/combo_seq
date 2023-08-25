@@ -28,6 +28,46 @@ using BGZFStreams
 using CodecZlib
 using ArgParse
 
+# Define a custom exception for missing references
+struct MissingReferenceError <: Exception
+    message::String
+end
+
+# Define a custom exception for missing files
+struct MissingFileError <: Exception
+    message::String
+end
+
+# Define the Config struct to store command-line arguments
+struct Config
+    need_reference::Bool
+    mrna::Union{String, Nothing}
+    fasta::Union{String, Nothing}
+    transcript::Union{String, Nothing}
+    genome::Union{String, Nothing}
+    organism::Union{String, Nothing}
+    threads::Int
+
+    # Constructor with error checks, Union stores possibility of no argument being passed
+    function Config(need_reference::Bool, mrna::Union{String, Nothing}, fasta::Union{String, Nothing}, 
+                    transcript::Union{String, Nothing}, genome::Union{String, Nothing}
+                    , organism::Union{String, Nothing}, threads::Int
+        )
+        
+        # Check if user specified a Salmon reference   
+        if isnothing(mrna) && !need_reference
+            throw(MissingReferenceError("No Salmon reference specified"))
+        end
+
+        # Check if user specified a miRNA reference
+        if fasta == "data/mirgene_all.fas" && !isfile(fasta)
+            throw(MissingFileError("No miRNA reference found"))
+        end
+        
+        new(need_reference, mrna, fasta, transcript, genome, organism, threads)
+    end
+end
+
 """
     capture_target_files(files_to_capture::AbstractString, directory::AbstractString=".")
 
@@ -1641,25 +1681,26 @@ function parse_commandline()
             default = 12
     end
 
-    return parse_args(arguments)
+    args = parse_args(arguments)
+
+    # Create a Config instance from parsed arguments
+    config = Config(
+        get(args, "need_reference", false),
+        get(args, "mrna", ""),
+        get(args, "fasta", "data/mirgene_all.fas"),
+        get(args, "transcript", nothing),
+        get(args, "genome", nothing),
+        get(args, "organism", "hsa"),
+        get(args, "threads", 12)
+    )
+
+    return config
 end
 
 function julia_main()::Cint
 
-    # Parse command line arguments
-    parsed_args = parse_commandline()
-
-    # Check if user specified a Salmon reference   
-    if isnothing(parsed_args["mrna"]) && !parsed_args["need-reference"]
-        throw(ArgumentError("No Salmon reference specified"))
-    end
-
-    # Check if user specified a miRNA reference
-    if parsed_args["fasta"] == "data/mirgene_all.fas"
-        if !isfile("data/mirgene_all.fas")
-            throw(ArgumentError("No miRNA reference found"))
-        end
-    end
+    # Parse command line arguments from Config struct
+    config = parse_commandline()
 
     # Say hello Issac!
     run(`echo " "`)
@@ -1701,14 +1742,14 @@ function julia_main()::Cint
     run(`echo -e "\t\e[0;31mBut\e[0m \e[1;31myou\e[0m \e[1;33mcan\e[0m \e[1;32mcall\e[0m \e[0;36mme\e[0m \e[1;35mIsaac...\e[0m "`)
     run(`echo " "`)
 
-    need_reference = parsed_args["need-reference"]
+    need_reference = config.need_reference
     fastqs = capture_target_files("_R1_001.fastq.gz")
     sample_names = map(sample -> first(split(sample, "_")), fastqs)
     organism_name = create_reference_file(need_reference
-                                            , !isnothing(parsed_args["transcript"]) ? parsed_args["transcript"] : "nothing"
-                                            , !isnothing(parsed_args["genome"]) ? parsed_args["genome"] : "nothing"
-                                            , parsed_args["organism"]
-                                            , parsed_args["fasta"]
+                                            , !isnothing(config.transcript) ? config.transcript : "nothing"
+                                            , !isnothing(config.genome) ? config.genome : "nothing"
+                                            , config.organism
+                                            , config.fasta
                                             )
     read_count_dict, dimer_count_dict, q_score_dict = parse_fastq_files(fastqs, sample_names)
     trimmed_fastq_files = trim_adapters(fastqs, sample_names)
@@ -1718,7 +1759,7 @@ function julia_main()::Cint
                                                             )
     mirna_counts_files = plot_mirna_counts(mirna_counts_dfs, sample_names)
     salmon_mrna_counts = align_with_salmon(trimmed_fastq_files
-                                        , !isnothing(parsed_args["mrna"]) ? parsed_args["mrna"] : organism_name
+                                        , !isnothing(config.mrna) ? config.mrna : organism_name
                                         , sample_names
                                         , need_reference
                                         )
