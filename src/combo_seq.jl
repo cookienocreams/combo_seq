@@ -29,9 +29,9 @@ using CodecZlib
 using ArgParse
 
 """
-    capture_target_files(files_to_capture::AbstractString)
+    capture_target_files(files_to_capture::AbstractString, directory::AbstractString=".")
 
-List all files in the current directory. 
+List all files in a directory. 
 
 Check to see if each file contains the target file's string. 
 
@@ -44,8 +44,8 @@ julia> capture_target_files(".txt")
  "file3.txt"
 ```
 """
-function capture_target_files(files_to_capture::AbstractString)
-    return filter(file -> occursin(files_to_capture, file), readdir())
+function capture_target_files(files_to_capture::AbstractString, directory::AbstractString=".")
+    return filter(file -> occursin(files_to_capture, file), readdir(directory))
 end
 
 """
@@ -146,7 +146,7 @@ function make_salmon_reference(organism_name::String, transcriptome_fasta::Strin
             wait(run(pipeline(
                     `salmon 
                     index 
-                    -i $organism_name 
+                    -i data/$organism_name 
                     --transcripts gentrome.fa
                     -k 19 
                     --threads 12
@@ -162,7 +162,7 @@ function make_salmon_reference(organism_name::String, transcriptome_fasta::Strin
             wait(run(pipeline(
                     `salmon 
                     index 
-                    -i $organism_name 
+                    -i data/$organism_name 
                     --transcripts gentrome.fa
                     -k 19 
                     --threads 12
@@ -191,9 +191,6 @@ function create_reference_file(need_reference::Bool
     if need_reference
         # Make diredctory to store downloaded files and created reference files
         !isdir("data") && mkdir("data")
-
-        # Download files and make reference files inside data folder
-        cd("data")
 
         # Check to see if the url contains the secure hypertext protocol, i.e. 'https:'
         # If yes, that is replaced by the non-secure protocol, i.e. http:, to avoid certificate errors
@@ -271,16 +268,14 @@ function create_reference_file(need_reference::Bool
         make_bowtie2_reference(fasta_file, organism_name)
 
         trash_removal("gentrome.fa")
+        trash_removal("salmon_decoys.txt")
         trash_removal(unzipped_reference_fasta_name)
         trash_removal(unzipped_reference_transcriptome_fasta)
 
-        cd("../")
     else
         !isdir("data") && mkdir("data")
 
-        cd("data")
         create_target_organism_fasta_file(organism_name, fasta_file)
-        cd("../")
     end
 
     return organism_name
@@ -890,8 +885,8 @@ organisms and pulls out only the miRNA data pertaining to the target organism.
 """
 function create_target_organism_fasta_file(organism_name::String, fasta_file::String)
 
-    # Skip making species miRNA reference if it exists
-    bowtie2_reference_files = capture_target_files(".bt2")
+    # Skip making species miRNA reference if it exists in data/
+    bowtie2_reference_files = capture_target_files(".bt2", "data")
     if isempty(bowtie2_reference_files)
 
         # Create file with all genuses with miRNA annotations
@@ -913,12 +908,12 @@ function create_target_organism_fasta_file(organism_name::String, fasta_file::St
 
         # Open the IO streams and sets the output file names for the fasta and bowtie2 index
         input_fasta_file = open(fasta_file)
-        output_fasta_file = open(organism_name * ".fa", "w")
+        output_fasta_file = open(string("data/", organism_name, ".fa"), "w")
 
         #=
-        Loop through MirGeneDB mature miRNA fasta looking for the header and sequence information
+        Loop through miRNA fasta looking for the header and sequence information
         for the target genus. If there's a match, that information is added to a new fasta file.
-        Must convert RNA sequences in MirGeneDB fasta to DNA.
+        Must convert RNA sequences in miRNA fasta to DNA.
         =#
         for line in eachline(input_fasta_file)
             input_genus_abbreviation = match(r">\K\w+", line)
@@ -939,8 +934,8 @@ function create_target_organism_fasta_file(organism_name::String, fasta_file::St
         =#
         wait(run(pipeline(
             `bowtie2-build 
-            $output_fasta_file_name 
-            $bowtie2_reference_name`
+            data/$output_fasta_file_name 
+            data/$bowtie2_reference_name`
             , devnull)
             , wait = false
             )
@@ -1033,7 +1028,6 @@ julia> mirna_discovery_calculation(["sample1.cut.fastq","sample2.cut.fastq","sam
 function mirna_discovery_calculation(trimmed_fastq_files::Vector{String}
                                     , sample_names::Vector{SubString{String}}
                                     , reference::AbstractString
-                                    , need_reference::Bool
                                     )
     number_of_records = length(trimmed_fastq_files)
     update_progress_bar = progress_bar_update(number_of_records
@@ -1045,19 +1039,12 @@ function mirna_discovery_calculation(trimmed_fastq_files::Vector{String}
 
     for (fastq_file, sample_name) in zip(trimmed_fastq_files, sample_names)
 
-        bowtie2_reference = 
-        if need_reference
-            string("data/", reference)
-        else
-            reference
-        end
-
         # Align to miRNA reference
         wait(run(pipeline(
                 `bowtie2
                 --norc
                 --threads 12
-                -x $bowtie2_reference
+                -x data/$reference
                 -U $fastq_file
                 -S $sample_name.miRNA.sam`
                 , devnull)
@@ -1648,6 +1635,10 @@ function parse_commandline()
             such as miRBase and MirGeneDB."
             arg_type = String
             default = "hsa"
+        "--threads", "-p"
+            help = "The number of processors to use for alignment."
+            arg_type = Int
+            default = 12
     end
 
     return parse_args(arguments)
@@ -1723,8 +1714,7 @@ function julia_main()::Cint
     trimmed_fastq_files = trim_adapters(fastqs, sample_names)
     mirna_counts_dfs, sam_files = mirna_discovery_calculation(trimmed_fastq_files
                                                             , sample_names
-                                                            , !isnothing(parsed_args["mirna"]) ? parsed_args["mirna"] : organism_name
-                                                            , need_reference
+                                                            , organism_name
                                                             )
     mirna_counts_files = plot_mirna_counts(mirna_counts_dfs, sample_names)
     salmon_mrna_counts = align_with_salmon(trimmed_fastq_files
