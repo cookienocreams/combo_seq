@@ -28,17 +28,47 @@ using BGZFStreams
 using CodecZlib
 using ArgParse
 
-# Define a custom exception for missing references
+"""
+    struct MissingReferenceError
+        message::String
+    end
+
+A structure that represents a custom exception for a missing reference.
+"""
 struct MissingReferenceError <: Exception
     message::String
 end
 
-# Define a custom exception for missing files
+"""
+    struct MissingFileError
+        message::String
+    end
+
+A structure that represents a custom exception for missing files.
+"""
 struct MissingFileError <: Exception
     message::String
 end
 
-# Define the Config struct to store command-line arguments
+"""
+    struct Config
+        need_reference::Bool
+        mrna::Union{String, Nothing}
+        fasta::Union{String, Nothing}
+        transcript::Union{String, Nothing}
+        genome::Union{String, Nothing}
+        organism::Union{String, Nothing}
+        threads::Int
+    end
+
+A structure that stores the command-line arguments.
+
+# Functionality
+
+- Contains a check to ensure that a Salmon and miRNA fasta file are passed as arguments. 
+If they were not, an error will be returned. This is to reduce the chances of an alignment 
+errors downstream.
+"""
 struct Config
     need_reference::Bool
     mrna::Union{String, Nothing}
