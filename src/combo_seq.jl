@@ -28,6 +28,34 @@ using BGZFStreams
 using CodecZlib
 using ArgParse
 
+export MissingReferenceError
+export MissingFileError
+export Config
+export get_genus_names
+export create_target_organism_fasta_file
+export capture_target_files
+export progress_bar_update
+export get_read_q_score!
+export make_bowtie2_reference
+export make_salmon_reference
+export create_reference_file
+export parse_fastq_files
+export trim_adapters
+export align_with_salmon
+export calculate_salmon_metrics
+export generate_mirna_counts
+export make_metrics_violin_plot
+export mirna_discovery_calculation
+export plot_mirna_counts
+export calculate_read_length_distribution
+export plot_fragment_lengths
+export plot_metrics
+export find_common_rnas
+export write_common_rna_file
+export plot_clustering
+export remove_files
+export remove_intermediate_files
+
 """
     struct MissingReferenceError
         message::String
@@ -341,10 +369,10 @@ function create_reference_file(need_reference::Bool
         make_salmon_reference(organism_name, unzipped_reference_transcriptome_fasta, cores)
         make_bowtie2_reference(fasta_file, organism_name)
 
-        trash_removal("gentrome.fa")
-        trash_removal("salmon_decoys.txt")
-        trash_removal(unzipped_reference_fasta_name)
-        trash_removal(unzipped_reference_transcriptome_fasta)
+        remove_files("gentrome.fa")
+        remove_files("salmon_decoys.txt")
+        remove_files(unzipped_reference_fasta_name)
+        remove_files(unzipped_reference_transcriptome_fasta)
 
     else
         !isdir("data") && mkdir("data")
@@ -356,42 +384,29 @@ function create_reference_file(need_reference::Bool
 end
 
 """
-    parse_fastq_files(fastqs::Vector{String}
-                        , sample_names::Vector{SubString{String}}
-                        )
+    parse_fastq_files(fastqs::Vector{String}, sample_names::Vector{SubString{String}})
 
-Loop through fastqs to calculate read counts, quality scores, and percent dimer.
+Calculate read counts, percent dimers, and average Q scores for a given set of fastq files.
 
-Calculate the number of reads in each fastq file.
+# Parameters
+- `fastqs`: A vector of filenames for the fastq files.
+- `sample_names`: A vector of sample names corresponding to the fastq files.
 
-Create dictionary with each sample name and its read count.
+# Returns
+Three dictionaries containing read counts, percent dimers, and average Q scores 
+indexed by sample name.
 
-Calculate the percent dimer present in a given fastq.
-
-Calculate the average Q score for a given fastq. Divide sum of Unicode converted quality 
-strings by the number of quality strings.
-
-#Example
+# Example
 ```julia
-julia> parse_fastq_files(["sample1.fastq.gz","sample2.fastq.gz","sample3.fastq.gz"]
-                            , ["sample1", "sample2", "sample3"])
-Dict{String, Int64} with 3 entries:
-  "sample1" => 6390314
-  "sample2" => 5000000
-  "sample3" => 7052928
-Dict{String, Float64} with 3 entries:
-  "sample1" => .02
-  "sample2" => .007
-  "sample3" => .018
-Dict{String, Number} with 3 entries:
-  "sample1" => 35.7
-  "sample2" => 36.1
-  "sample3" => 35.9
+julia> parse_fastq_files(["sample1.fastq.gz", "sample2.fastq.gz", "sample3.fastq.gz"], 
+                        ["sample1", "sample2", "sample3"])
+# Returns:
+# - A dictionary of read counts.
+# - A dictionary of percent dimers.
+# - A dictionary of average Q scores.
 ```
 """
-function parse_fastq_files(fastqs::Vector{String}
-                            , sample_names::Vector{SubString{String}}
-                            )
+function parse_fastq_files(fastqs::Vector{String}, sample_names::Vector{SubString{String}})
 
     number_of_records = length(fastqs)
     update_progress_bar = progress_bar_update(number_of_records
@@ -402,6 +417,7 @@ function parse_fastq_files(fastqs::Vector{String}
     read_count_dict = Dict{String, Int64}()
     dimer_count_dict = Dict{String, Float64}()
     q_score_dict = Dict{String, Float64}()
+    three_p_adapter = "TGGAATTCTCGGGTGCCAAGG"
 
     for (fastq_file, sample_name) in zip(fastqs, sample_names)
         # List to store each reads quality information
@@ -411,27 +427,20 @@ function parse_fastq_files(fastqs::Vector{String}
 
         fastq = GZip.open(fastq_file)
         sample_read_count = 1
-        line_tracker = 1
-
-        for line in eachline(fastq)
-            # Ignore lines without sequence or quality information
-            if line_tracker % 4 != 2 && line_tracker % 4 != 0
-                line_tracker += 1
-            elseif line_tracker % 4 == 2
-                # Count canonical 0 bp dimer
-                dimer = startswith(line, "TGGAATTCTCGGGTGCC")
-
-                if dimer
-                    dimer_count += 1
-                end
-
-                sample_read_count += 1
-                line_tracker += 1
-            elseif line_tracker % 4 == 0
-                # Calculate average quality score
-                get_read_q_score!(line, q_score_list)
-                line_tracker += 1
-            end  
+        # Should use FASTX here, but there seems to be incompatibility with the other
+        # packages when creating apps using PackageCompiler.jl
+        for lines in Iterators.partition(eachline(fastq), 4)
+            sequence_line = lines[2]
+            quality_line = lines[4]
+    
+            # Skip over 4N sequences
+            if startswith(sequence_line[4:end], three_p_adapter)
+                dimer_count += 1
+            end
+    
+            # Calculate average quality score
+            get_read_q_score!(quality_line, q_score_list)
+            sample_read_count += 1
         end
 
         close(fastq)
@@ -453,32 +462,33 @@ function parse_fastq_files(fastqs::Vector{String}
 end
 
 """
-    trim_adapters(fastqs::Vector{String}
-                    , sample_names::Vector{SubString{String}}
-                    )
+    trim_adapters(fastqs::Vector{String}, sample_names::Vector{SubString{String}})
 
-Trim the 3' adapter from each read.
+Trim the 3' adapter from each read in the provided fastq files.
 
-Combo-Seq Read 1 Setup:\n
-               5' Adapter      -          Insert        - 3' Adapter      
-GATCGTCGGACTGTAGAACTCTGAACNNNN - TGTCAGTTTGTCAAATACCCCA - AAAAAAAAAA 
+# Combo-Seq Adapters:
+   5' Adapter: GATCGTCGGACTGTAGAACTCTGAACNNNN \n
+   3' Adapter: AAAAAAAAAA
 
-The bases on the 3' end are also quality trimmed if their quality score is below 20. Reads 
-shorter than 16 bases or that weren't trimmed are discarded.
+3' bases with a quality score below 20 are trimmed. Reads shorter than 16 bases or 
+those that weren't trimmed are discarded.
 
-#Example
+# Parameters
+- `fastqs`: A vector of filenames for the fastq files.
+- `sample_names`: A vector of sample names corresponding to the fastq files.
+
+# Returns
+A list of filenames for the trimmed fastq files.
+
+# Example
 ```julia
-julia> trim_adapters(["sub_sample1.fastq","sub_sample2.fastq","sub_sample3.fastq"]
-                        , ["sample1", "sample2", "sample3"])
-3-element Vector{String}:
- "sample1.cut.fastq"
- "sample2.cut.fastq"
- "sample3.cut.fastq"
+julia> trim_adapters(["sample1.fastq.gz", "sample2.fastq.gz", "sample3.fastq.gz"], 
+                    ["sample1", "sample2", "sample3"])
+# Returns:
+["sample1.cut.fastq", "sample2.cut.fastq", "sample3.cut.fastq"]
 ```
 """
-function trim_adapters(fastqs::Vector{String}
-                        , sample_names::Vector{SubString{String}}
-                        )
+function trim_adapters(fastqs::Vector{String}, sample_names::Vector{SubString{String}})
     number_of_records = length(fastqs)
     update_progress_bar = progress_bar_update(number_of_records, .5, "Trimming adapters...")
 
@@ -578,7 +588,7 @@ function align_with_salmon(trimmed_fastq_files::Vector{String}
         end
 
         # Remove the transcript aligned sam files
-        trash_removal(capture_target_files(".mRNA.sam"))
+        remove_files(capture_target_files(".mRNA.sam"))
 
         # Update the progress bar
         next!(update_progress_bar)
@@ -692,7 +702,7 @@ function plot_fragment_lengths(length_files::Vector{String}
 
     merge_pdfs([pdf_length_files...], "ComboSeq_fragment_length_plots.pdf")
 
-    trash_removal(pdf_length_files)
+    remove_files(pdf_length_files)
 end
 
 """
@@ -712,12 +722,8 @@ alignment information in a dictionary.
 ```julia
 julia> calculate_salmon_metrics("sample1.cut.fastq"
                         , Dict("sample1" => 6390314, "sample2" => 5000000, "sample3" => 7052928))
-Dict{String, Float64} with 5 entries:
-  "miRNA" => 65.0
-  "tRNA" => 4.2
-  "piRNA" => 1.2
-  "snoRNA" => 1.9
-  "rRNA" => 3.3
+# Returns:
+# - "ComboSeq_metrics.csv"
 ```
 """
 function calculate_salmon_metrics(trimmed_fastq_files::Vector{String}
@@ -933,7 +939,7 @@ function plot_metrics(metrics_file::String
 
     merge_pdfs([pdf_metrics_files...], "ComboSeq_metrics_plots.pdf")
     
-    trash_removal(pdf_metrics_files)
+    remove_files(pdf_metrics_files)
 end
 
 """
@@ -1231,7 +1237,7 @@ function plot_mirna_counts(mirna_counts_dfs::Vector{DataFrame}
     merge_pdfs([pdf_miRNA_files...], "Comboseq_miRNA_plots.pdf")
     
     # Remove individual sample plots
-    trash_removal(pdf_miRNA_files)
+    remove_files(pdf_miRNA_files)
 
     miRNA_counts_files::Vector{String} = capture_target_files("_miRNA_counts.csv")
 
@@ -1314,7 +1320,7 @@ function plot_mrna_counts(salmon_mrna_counts::Vector{String}
     merge_pdfs([pdf_mRNA_files...], "Comboseq_mRNA_plots.pdf")
     
     # Remove individual sample plots
-    trash_removal(pdf_mRNA_files)
+    remove_files(pdf_mRNA_files)
 
     mRNA_counts_files::Vector{String} = capture_target_files("_mRNA_counts.csv")
 
@@ -1322,7 +1328,7 @@ function plot_mrna_counts(salmon_mrna_counts::Vector{String}
 end
 
 """
-    find_common_mirnas(mirna_counts_files::Vector{String}
+    find_common_rnas(mirna_counts_files::Vector{String}
                             , read_count_dict::Dict{String, Int64}
                             , sample_names::Vector{SubString{String}}
                             )
@@ -1344,7 +1350,7 @@ for the corresponding sample.
 
 # Example
 ```julia
-julia> find_common_mirnas(["sample1_miRNA_counts.csv", "sample2_miRNA_counts.csv"]...,
+julia> find_common_rnas(["sample1_miRNA_counts.csv", "sample2_miRNA_counts.csv"]...,
                         , Dict("sample1" => 6390314, "sample2" => 5000000, "sample3" => 7052928)
                         , ["sample1", "sample2", "sample3"])
 ```
@@ -1486,8 +1492,8 @@ function write_common_rna_file(mirna_names::Base.KeySet{String, Dict{String, Int
     # Run principal component analysis and UMAP on common miRNA
     plot_clustering("Common_RPM_miRNAs.tsv", rna_type)
 
-    trash_removal(common_files)
-    trash_removal(common_RPM_files)
+    remove_files(common_files)
+    remove_files(common_RPM_files)
 end
 
 function write_common_rna_file(mrna_names::Base.KeySet{String, Dict{String, Int64}}
@@ -1531,8 +1537,8 @@ function write_common_rna_file(mrna_names::Base.KeySet{String, Dict{String, Int6
     # Run principal component analysis and UMAP on common mRNA
     plot_clustering("Common_TPM_mRNAs.tsv", rna_type)
 
-    trash_removal(common_files)
-    trash_removal(common_TPM_files)
+    remove_files(common_files)
+    remove_files(common_TPM_files)
 end
 
 """
@@ -1642,13 +1648,13 @@ end
 """
 Spot remove unecessary intermediate files.
 """
-function trash_removal(Files_to_Delete::Vector{String})
+function remove_files(Files_to_Delete::Vector{String})
     for file in Files_to_Delete
         rm(file)
     end
 end
 
-function trash_removal(File_to_Delete::String)
+function remove_files(File_to_Delete::String)
     rm(File_to_Delete)
 end
 
@@ -1673,7 +1679,7 @@ function remove_intermediate_files()
     end
 
     json_files = capture_target_files(".json")
-    trash_removal(json_files)
+    remove_files(json_files)
 end
 
 function parse_commandline()
