@@ -9,7 +9,7 @@ Basic analysis of NEXTFLEX Combo-Seq libraries
 - cutadapt
 - salmon
 
- ## Note: This currently only supports the Upcoming release: v1.10.0-beta2
+ ## Note: This currently only compiles under the Upcoming release: v1.10.0-beta2
  There is a bug in the Plots library that prevents packages from being complied using PackageCompiler.
  It should be fixed in v1.10, once that releases. Versions < v1.8.5 may also work.
  
