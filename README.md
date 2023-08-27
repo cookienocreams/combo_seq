@@ -1,6 +1,8 @@
 # Combo-Seq-Pipeline
 Basic analysis of NEXTFLEX Combo-Seq libraries
 
+[![CI](https://github.com/cookienocreams/combo_seq/actions/workflows/CI.yaml/badge.svg)](https://github.com/cookienocreams/combo_seq/actions/workflows/CI.yaml)
+
 ## Script dependencies
 - bowtie2
 - samtools
