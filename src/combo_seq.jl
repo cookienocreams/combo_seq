@@ -1781,7 +1781,7 @@ function julia_main()::Cint
     run(`echo -e ".................####*..*#####\e[0m'"`)
     run(`echo -e "\t     \e[0;36m\e[1;4mP  i  p  e  l  i  n  e\e[0m"`)
     run(`echo " "`)
-    run(`echo -e "\t\e[0;31mBut\e[0m \e[1;31myou\e[0m \e[1;33mcan\e[0m \e[1;32mcall\e[0m \e[0;36mme\e[0m \e[1;35mIsaac...\e[0m "`)
+    run(`echo -e "\t\e[0;31mBut\e[0m \e[1;31myou\e[0m \e[1;33mcan\e[0m \e[1;32mcall\e[0m \e[0;36mme\e[0m \e[1;35mLenny...\e[0m "`)
     run(`echo " "`)
 
     need_reference = config.need_reference
