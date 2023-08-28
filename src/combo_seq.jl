@@ -72,9 +72,9 @@ end
         message::String
     end
 
-A structure that represents a custom exception for missing files.
+A structure that represents a custom exception for an incorrectly specified orgamism name.
 """
-struct MissingFileError <: Exception
+struct IncorrectOrganismError <: Exception
     message::String
 end
 
@@ -107,8 +107,8 @@ struct Config
     threads::Int
 
     # Constructor with error checks, Union stores possibility of no argument being passed
-    function Config(need_reference::Bool, mrna::Union{String, Nothing}, fasta::Union{String, Nothing}, 
-                    transcript::Union{String, Nothing}, genome::Union{String, Nothing}
+    function Config(need_reference::Bool, mrna::Union{String, Nothing}, fasta::Union{String, Nothing}
+                    , transcript::Union{String, Nothing}, genome::Union{String, Nothing}
                     , organism::Union{String, Nothing}, threads::Int
         )
         
@@ -117,9 +117,29 @@ struct Config
             throw(MissingReferenceError("No Salmon reference specified"))
         end
 
+        # Check if user specified a transciptome fasta
+        if !need_reference && isnothing(transcript)
+            throw(MissingReferenceError("No transcriptome fasta specified"))
+        end
+
+        # Check if user specified a genome fasta
+        if !need_reference && isnothing(genome)
+            throw(MissingReferenceError("No genome fasta specified"))
+        end
+
+        # Check if user specified Salmon reference exists
+        if !isnothing(mrna) && !isdir(mrna)
+            throw(MissingReferenceError("Salmon reference not found at: $mrna"))
+        end
+
         # Check if user specified a miRNA reference
         if fasta == "data/mirgene_all.fas" && !isfile(fasta)
-            throw(MissingFileError("No miRNA reference found"))
+            throw(MissingReferenceError("No miRNA reference found"))
+        end
+
+        # Check if orgamism name is three characters long, as expected for an abbreviation
+        if length(organism) != 3
+            throw(IncorrectOrganismError("Organism name must be three characters long"))
         end
         
         new(need_reference, mrna, fasta, transcript, genome, organism, threads)
