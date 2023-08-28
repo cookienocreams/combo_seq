@@ -46,6 +46,49 @@ There are a few options that can be changed if desired. Use `-h` or `--help` to 
 ```bash
 /home/user/combo_seq_app/bin/combo_seq --help
 ```
+This outputs
+
+```
+usage: Combo-Seq Analysis [-r] [-M MRNA] [-f FASTA] [-t TRANSCRIPT]
+                        [-g GENOME] [-O ORGANISM] [-p THREADS] [-h]
+
+Basic analysis of NEXTFLEX Combo-Seq libraries.
+
+optional arguments:
+  -r, --need-reference  Flag for specifying if a reference needs to be
+                        downloaded or not.
+  -M, --mrna MRNA       The full path to the Salmon mRNA reference the
+                        samples will be aligned to, e.g.,
+                        /home/user/hg38_mRNA.
+  -f, --fasta FASTA     The full mature miRNA fasta file. (default:
+                        "data/mirgene_all.fas")
+  -t, --transcript TRANSCRIPT
+                        Input website url containing the desired
+                        transcriptome reference fasta if one needs to
+                        be downloaded and created. For human gencode
+                        version 44 that would be
+                        'https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_44/gencode.v44.transcripts.fa.gz'.
+                        Only needed if '--need-reference' flag is
+                        used.
+  -g, --genome GENOME   Input website url containing the desired
+                        genomic reference fasta if one needs to be
+                        downloaded and created. For human gencode
+                        version 44 that would be
+                        'https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_44/GRCh38.p14.genome.fa.gz'.
+                        Only needed if '--need-reference' flag is
+                        used.
+  -O, --organism ORGANISM
+                        Abbreviated name of organism, e.g., 'hsa' for
+                        human or 'mmu' for mouse. This should match
+                        the standard three letter abbreviation found
+                        in miRNA databases such as miRBase and
+                        MirGeneDB. (default: "hsa")
+  -p, --threads THREADS
+                        The number of processors to use for alignment.
+                        (type: Int64, default: 12)
+  -h, --help            show this help message and exit
+
+```
 
 The app can be run using the `combo_seq` executable in the `/home/user/combo_seq_app/bin` folder in a folder containing fastqs to be analyzed.
 
