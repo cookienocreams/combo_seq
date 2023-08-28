@@ -154,10 +154,10 @@ function progress_bar_update(number_of_records::Int64
                             , description::String
                             )
     progress_bar_update = Progress(number_of_records
-    , dt=interval
-    , barglyphs=BarGlyphs("[=> ]")
-    , barlen=100
-    , desc=description
+        , dt=interval
+        , barglyphs=BarGlyphs("[=> ]")
+        , barlen=100
+        , desc=description
     )
 
     return progress_bar_update
@@ -417,7 +417,7 @@ function parse_fastq_files(fastqs::Vector{String}, sample_names::Vector{SubStrin
     read_count_dict = Dict{String, Int64}()
     dimer_count_dict = Dict{String, Float64}()
     q_score_dict = Dict{String, Float64}()
-    three_p_adapter = "TGGAATTCTCGGGTGCCAAGG"
+    poly_a_tail = "AAAAAA"
 
     for (fastq_file, sample_name) in zip(fastqs, sample_names)
         # List to store each reads quality information
@@ -434,7 +434,7 @@ function parse_fastq_files(fastqs::Vector{String}, sample_names::Vector{SubStrin
             quality_line = lines[4]
     
             # Skip over 4N sequences
-            if startswith(sequence_line[4:end], three_p_adapter)
+            if startswith(sequence_line[4:end], poly_a_tail)
                 dimer_count += 1
             end
     
@@ -1669,7 +1669,6 @@ function remove_intermediate_files()
         ,capture_target_files("v22_cluster")
         ,capture_target_files(".sam")
         ,capture_target_files(".bam")
-        ,capture_target_files("quant")
         ,capture_target_files("cut")
         )
     )
@@ -1691,7 +1690,7 @@ function parse_commandline()
         "--need-reference", "-r"
             help = "Flag for specifying if a reference needs to be downloaded or not."
             action = :store_true
-        "--mrna", "-M"
+        "--mrna", "-m"
             help = "The full path to the Salmon mRNA reference the samples will be aligned to, \
             e.g., /home/user/hg38_mRNA."
             arg_type = String
@@ -1746,7 +1745,7 @@ function julia_main()::Cint
 
     # Say hello Lenny!
     run(`echo " "`)
-    run(`echo -e "\e[0;36m&&&&&&&&&...&&&&......&&&..........&"`)
+    run(`echo -e "\e[0;36m&&&&&&&&&...&&&&......&&&.........&"`)
     run(`echo -e   "&&&&&&&&&...&&&&&.....&&&........&&&"`)
     run(`echo -e   "&&&...&&&...&&&.&&....&&&.......&&.&&"`)
     run(`echo -e   "&&&&&&&&&...&&&..&&...&&&......&&...&&"`)
