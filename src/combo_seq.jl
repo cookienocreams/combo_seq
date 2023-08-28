@@ -68,7 +68,7 @@ struct MissingReferenceError <: Exception
 end
 
 """
-    struct MissingFileError
+    struct IncorrectOrganismError
         message::String
     end
 
@@ -1348,217 +1348,160 @@ function plot_mrna_counts(salmon_mrna_counts::Vector{String}
 end
 
 """
-    find_common_rnas(mirna_counts_files::Vector{String}
-                            , read_count_dict::Dict{String, Int64}
-                            , sample_names::Vector{SubString{String}}
-                            )
+    find_common_rnas(counts_files::Vector{String}
+                    , sample_names::Vector{SubString{String}} 
+                    ; rna_type::String="miRNA", read_count_dict::Dict{String
+                    , Int64}=Dict{String, Int64}()
+                    )
 
 Return the RNAs present in all samples, together with their counts and reads per million reads (RPM)
 or transcripts per million (TPM).
 
 # Arguments
-- `[mi/m]rna_counts_files`: A vector of files containing sample RNA counts.
-- `read_count_dict`: A dictionary where keys are sample names and values are the total number of reads 
-for the corresponding sample.
+- `counts_files`: A vector of files containing sample RNA counts.
 - `sample_names`: A vector of sample names.
+- `rna_type`: A string specifying the type of RNA ("miRNA" or "mRNA"). Default is "miRNA".
+- `read_count_dict`: (Optional for "mRNA" type) A dictionary where keys are sample names and 
+values are the total number of reads 
+for the corresponding sample. This is required for "miRNA" type to compute RPM values.
 
 # Returns
 - A Tuple of three items:
     1. A list of RNAs that are common to all samples.
     2. A list of dictionaries where each dictionary contains the RNA counts for one sample.
-    3. A list of dictionaries where each dictionary contains the RPM/TPM values for the miRNAs in one sample.
+    3. A list of dictionaries where each dictionary contains the RPM (for miRNA) or TPM 
+    (for mRNA) values for the RNAs in one sample.
 
 # Example
+For miRNA:
 ```julia
-julia> find_common_rnas(["sample1_miRNA_counts.csv", "sample2_miRNA_counts.csv"]...,
-                        , Dict("sample1" => 6390314, "sample2" => 5000000, "sample3" => 7052928)
-                        , ["sample1", "sample2", "sample3"])
+julia> find_common_rnas(["sample1_miRNA_counts.csv", "sample2_miRNA_counts.csv"],
+                        ["sample1", "sample2"],
+                        rna_type="miRNA",
+                        read_count_dict=Dict("sample1" => 6390314, "sample2" => 5000000))
 ```
 """
-function find_common_rnas(mirna_counts_files::Vector{String}
-                            , read_count_dict::Dict{String, Int64}
-                            , sample_names::Vector{SubString{String}}
-                            )
-    # Vector of dictionaries containing the miRNA counts from each sample
-    miRNA_info = Vector{Dict{String, Int64}}()
-    RPM_info = Vector{Dict{String, Number}}()
-    full_miRNA_names_list = Vector{String}()
+function find_common_rnas(counts_files::Vector{String}
+                          , sample_names::Vector{SubString{String}}
+                          ; rna_type::String="miRNA"
+                          , read_count_dict::Dict{String, Int64}=Dict{String, Int64}()
+                          )
+    
+    info = rna_type == "miRNA" ? Vector{Dict{String, Int64}}() : Vector{Dict{String, Float64}}()
+    normalization_info = Vector{Dict{String, Number}}()
+    full_names_list = Vector{String}()
 
-    for (file, sample_name) in zip(mirna_counts_files, sample_names)
-        miRNA_file = open(file, "r")
+    for file in counts_files
+        rna_file = open(file, "r")
 
-        # Dictionaries to hold each miRNA and its associated read count
-        sample_miRNA_counts_dictionary = Dict{String, Int64}()
-        sample_miRNA_RPM_dictionary = Dict{String, Number}()
-
-        # Skip header line
-        readline(miRNA_file)
-
-        for line in eachline(miRNA_file)
-            split_line = split(line, ",")
-            miRNA_count = parse(Int64, split_line[2])
-            miRNA_name = first(split_line)
-            RPM = round(miRNA_count / (read_count_dict[sample_name] / 10^6), digits = 4)
-
-            sample_miRNA_counts_dictionary[miRNA_name] = miRNA_count
-            sample_miRNA_RPM_dictionary[miRNA_name] = RPM
-        end
-
-        push!(miRNA_info, sample_miRNA_counts_dictionary)
-        push!(RPM_info, sample_miRNA_RPM_dictionary)
-        
-        append!(full_miRNA_names_list, keys(sample_miRNA_counts_dictionary))
-
-        close(miRNA_file)
-    end
-
-    # Count number each miRNA's occurances
-    miRNA_names_dict = countmap(full_miRNA_names_list)
-
-    # Find miRNA present in all samples, .i.e. have counts equal to the number of samples analyzed
-    miRNAs_in_common = filter(miRNA -> last(miRNA) === length(sample_names), miRNA_names_dict) |> keys
-
-    return miRNAs_in_common, miRNA_info, RPM_info
-end
-
-function find_common_rnas(mrna_counts_files::Vector{String}
-                            , sample_names::Vector{SubString{String}}
-                            )
-    # Vector of dictionaries containing the mRNA counts from each sample
-    mRNA_info = Vector{Dict{String, Float64}}()
-    TPM_info = Vector{Dict{String, Number}}()
-    full_mRNA_names_list = Vector{String}()
-
-    for file in mrna_counts_files
-        mRNA_file::IOStream = open(file, "r")
-
-        # Dictionaries to hold each mRNA and its associated read count
-        sample_mRNA_counts_dictionary = Dict{String, Float64}()
-        sample_mRNA_TPM_dictionary = Dict{String, Number}()
+        sample_counts_dictionary = rna_type == "miRNA" ? Dict{String, Int64}() : Dict{String, Float64}()
+        sample_normalization_dictionary = Dict{String, Number}()
 
         # Skip header line
-        readline(mRNA_file)
+        readline(rna_file)
 
-        for line in eachline(mRNA_file)
+        for line in eachline(rna_file)
             split_line = split(line, ",")
+            
             if length(split_line) == 2
-                mRNA_count = parse(Float64, split_line[2])
-                mRNA_name = first(split_line)
-                TPM = round(mRNA_count, digits = 4)
+                count = rna_type == "miRNA" ? parse(Int64, split_line[2]) : parse(Float64, split_line[2])
+                rna_name = first(split_line)
 
-                sample_mRNA_counts_dictionary[mRNA_name] = mRNA_count
-                sample_mRNA_TPM_dictionary[mRNA_name] = TPM
+                if rna_type == "miRNA"
+                    norm_value = round(count / (read_count_dict[sample_names[findfirst(x -> x == file, counts_files)]] / 10^6), digits=4)
+                else
+                    norm_value = round(count, digits=4)
+                end
+
+                sample_counts_dictionary[rna_name] = count
+                sample_normalization_dictionary[rna_name] = norm_value
             end
         end
 
-        push!(mRNA_info, sample_mRNA_counts_dictionary)
-        push!(TPM_info, sample_mRNA_TPM_dictionary)
-        
-        append!(full_mRNA_names_list, keys(sample_mRNA_counts_dictionary))
+        push!(info, sample_counts_dictionary)
+        push!(normalization_info, sample_normalization_dictionary)
 
-        close(mRNA_file)
+        append!(full_names_list, keys(sample_counts_dictionary))
+
+        close(rna_file)
     end
 
-    # Count number each mRNA's occurances
-    miRNA_names_dict = countmap(full_mRNA_names_list)
+    names_dict = countmap(full_names_list)
+    RNAs_in_common = filter(rna -> last(rna) === length(sample_names), names_dict) |> keys
 
-    # Find miRNA present in all samples, .i.e. have counts equal to the number of samples analyzed
-    miRNAs_in_common = filter(miRNA -> last(miRNA) === length(sample_names), miRNA_names_dict) |> keys
-
-    return miRNAs_in_common, mRNA_info, TPM_info
+    return RNAs_in_common, info, normalization_info
 end
 
 """
-Write RNAs all samples have in common to output file.
+    write_common_rna_file(rna_names::Base.KeySet{String, Dict{String, Int64}},
+                          rna_info::Vector{Dict{String, Number}},
+                          normalization_info::Vector{Dict{String, Number}},
+                          sample_names::Vector{SubString{String}};
+                          rna_type::String="miRNA")
+
+Write the common RNAs found in all samples to an output file. This function generates two sets of files for each sample: 
+one containing raw RNA counts and another containing normalized values (RPM for miRNA or TPM for mRNA). It then 
+combines these files for all samples to produce comprehensive outputs, and subsequently conducts a principal component 
+analysis and UMAP on the common RNA data.
+
+# Arguments
+- `rna_names`: A set containing the names of RNAs that are common across all samples.
+- `rna_info`: A vector of dictionaries with each dictionary containing the RNA counts for one sample.
+- `normalization_info`: A vector of dictionaries, each containing the RPM (for miRNA) or TPM (for mRNA) values for the RNAs in one sample.
+- `sample_names`: A vector of sample names.
+- `rna_type`: (Optional) A string specifying the type of RNA ("miRNA" or "mRNA"). Default is "miRNA".
+
+# Outputs
+- Generates files for each sample named like `sample_common_miRNAs.tsv` and `sample_common_miRNAs_RPM.tsv` (or their mRNA equivalents).
+- Combines these files to produce comprehensive outputs named `Common_miRNAs.tsv` and `Common_RPM_miRNAs.tsv` (or their mRNA equivalents).
+- Conducts principal component analysis and UMAP based on common RNA data.
 """
-function write_common_rna_file(mirna_names::Base.KeySet{String, Dict{String, Int64}}
-                                , mirna_info::Vector{Dict{String, Int64}}
-                                , rpm_info::Vector{Dict{String, Number}}
-                                , sample_names::Vector{SubString{String}}
-                                ; rna_type="miRNA"
-                                )
-
-    for (index, sample) in enumerate(sample_names)
-        common_miRNA_file::IOStream = open(string(sample, "_common_miRNAs.tsv"), "w")
-        common_miRNA_file_RPM::IOStream = open(string(sample, "_common_miRNAs_RPM.tsv"), "w")
-
-        if index == 1
-            write(common_miRNA_file, string(rna_type, "\t", sample, "\n"))
-            write(common_miRNA_file_RPM, string(rna_type, "\t", sample, "\n"))
-            for miRNA in mirna_names
-                write(common_miRNA_file, string(miRNA, "\t", mirna_info[index][miRNA], "\n"))
-                write(common_miRNA_file_RPM, string(miRNA, "\t", rpm_info[index][miRNA], "\n"))
-            end
-        else
-            write(common_miRNA_file, string(sample, "\n"))
-            write(common_miRNA_file_RPM, string(sample, "\n"))
-            for miRNA in mirna_names
-                write(common_miRNA_file, string(mirna_info[index][miRNA], "\n"))
-                write(common_miRNA_file_RPM, string(rpm_info[index][miRNA], "\n"))
-            end
-        end
-
-        close(common_miRNA_file)
-        close(common_miRNA_file_RPM)
-    end
-
-    common_files = capture_target_files("_common_miRNAs.tsv")
-    common_RPM_files = capture_target_files("_common_miRNAs_RPM.tsv")
-
-    # Combine all the separate common miRNA files into one file
-    run(pipeline(`paste $common_files`, stdout = "Common_miRNAs.tsv"))
-    run(pipeline(`paste $common_RPM_files`, stdout = "Common_RPM_miRNAs.tsv"))
-
-    # Run principal component analysis and UMAP on common miRNA
-    plot_clustering("Common_RPM_miRNAs.tsv", rna_type)
-
-    remove_files(common_files)
-    remove_files(common_RPM_files)
-end
-
-function write_common_rna_file(mrna_names::Base.KeySet{String, Dict{String, Int64}}
-                                , mrna_info::Vector{Dict{String, Float64}}
-                                , tpm_info::Vector{Dict{String, Number}}
-                                , sample_names::Vector{SubString{String}}
-                                ; rna_type="mRNA"
-                                )
+function write_common_rna_file(rna_names::Base.KeySet{String, Dict{String, Int64}},
+                               rna_info::Vector{Dict{String, Number}},
+                               normalization_info::Vector{Dict{String, Number}},
+                               sample_names::Vector{SubString{String}};
+                               rna_type::String="miRNA"
+                               )
+    # File naming based on RNA type
+    rna_file_suffix = rna_type == "miRNA" ? "miRNAs" : "mRNAs"
+    norm_file_suffix = rna_type == "miRNA" ? "RPM" : "TPM"
     
     for (index, sample) in enumerate(sample_names)
-        common_mRNA_file::IOStream = open(string(sample, "_common_mRNAs.tsv"), "w")
-        common_mRNA_file_TPM::IOStream = open(string(sample, "_common_mRNAs_TPM.tsv"), "w")
+        common_rna_file::IOStream = open(string(sample, "_common_", rna_file_suffix, ".tsv"), "w")
+        common_rna_file_norm::IOStream = open(string(sample, "_common_", rna_file_suffix, "_", norm_file_suffix, ".tsv"), "w")
 
         if index == 1
-            write(common_mRNA_file, string(rna_type, "\t", sample, "\n"))
-            write(common_mRNA_file_TPM, string(rna_type, "\t", sample, "\n"))
-            for mRNA in mrna_names
-                write(common_mRNA_file, string(mRNA, "\t", mrna_info[index][mRNA], "\n"))
-                write(common_mRNA_file_TPM, string(mRNA, "\t", tpm_info[index][mRNA], "\n"))
+            write(common_rna_file, string(rna_type, "\t", sample, "\n"))
+            write(common_rna_file_norm, string(rna_type, "\t", sample, "\n"))
+            for rna in rna_names
+                write(common_rna_file, string(rna, "\t", rna_info[index][rna], "\n"))
+                write(common_rna_file_norm, string(rna, "\t", normalization_info[index][rna], "\n"))
             end
         else
-            write(common_mRNA_file, string(sample, "\n"))
-            write(common_mRNA_file_TPM, string(sample, "\n"))
-            for mRNA in mrna_names
-                write(common_mRNA_file, string(mrna_info[index][mRNA], "\n"))
-                write(common_mRNA_file_TPM, string(tpm_info[index][mRNA], "\n"))
+            write(common_rna_file, string(sample, "\n"))
+            write(common_rna_file_norm, string(sample, "\n"))
+            for rna in rna_names
+                write(common_rna_file, string(rna_info[index][rna], "\n"))
+                write(common_rna_file_norm, string(normalization_info[index][rna], "\n"))
             end
         end
 
-        close(common_mRNA_file)
-        close(common_mRNA_file_TPM)
+        close(common_rna_file)
+        close(common_rna_file_norm)
     end
 
-    common_files = capture_target_files("_common_mRNAs.tsv")
-    common_TPM_files = capture_target_files("_common_mRNAs_TPM.tsv")
+    common_files = capture_target_files(string("_common_", rna_file_suffix, ".tsv"))
+    common_norm_files = capture_target_files(string("_common_", rna_file_suffix, "_", norm_file_suffix, ".tsv"))
 
-    # Combine all the separate common mRNA files into one file
-    run(pipeline(`paste $common_files`, stdout = "Common_mRNAs.tsv"))
-    run(pipeline(`paste $common_TPM_files`, stdout = "Common_TPM_mRNAs.tsv"))
+    # Combine all the separate common RNA files into one file
+    run(pipeline(`paste $common_files`, stdout = string("Common_", rna_file_suffix, ".tsv")))
+    run(pipeline(`paste $common_norm_files`, stdout = string("Common_", norm_file_suffix, "_", rna_file_suffix, ".tsv")))
 
-    # Run principal component analysis and UMAP on common mRNA
-    plot_clustering("Common_TPM_mRNAs.tsv", rna_type)
+    # Run principal component analysis and UMAP on common RNA
+    plot_clustering(string("Common_", norm_file_suffix, "_", rna_file_suffix, ".tsv"), rna_type)
 
     remove_files(common_files)
-    remove_files(common_TPM_files)
+    remove_files(common_norm_files)
 end
 
 """
@@ -1837,14 +1780,16 @@ function julia_main()::Cint
                                         )
     plot_metrics(metrics_file, sample_names)
     make_metrics_violin_plot(metrics_file)
-    Full_miRNA_Names_List, mirna_info, rpm_info = find_common_rnas(mirna_counts_files
+    full_mrna_names_list, mirna_info, rpm_info = find_common_rnas(mirna_counts_files
+                                                                , sample_names
+                                                                , rna_type="miRNA"
                                                                 , read_count_dict
-                                                                , sample_names
                                                                 )
-    write_common_rna_file(Full_miRNA_Names_List, mirna_info, rpm_info, sample_names, rna_type="miRNA")
-    full_mrna_names_list, mrna_info, tpm_info = find_common_rnas(mrna_counts_files
-                                                                , sample_names
-                                                                )
+    write_common_rna_file(full_mrna_names_list, mirna_info, rpm_info, sample_names, rna_type="miRNA")
+    _, mrna_info, tpm_info = find_common_rnas(mrna_counts_files
+                                                , sample_names
+                                                , rna_type="mRNA"
+                                                )
     write_common_rna_file(full_mrna_names_list, mrna_info, tpm_info, sample_names, rna_type="mRNA")
     remove_intermediate_files()
     println(" ")
