@@ -1744,7 +1744,7 @@ function julia_main()::Cint
     # Parse command line arguments from Config struct
     config = parse_commandline()
 
-    # Say hello Issac!
+    # Say hello Lenny!
     run(`echo " "`)
     run(`echo -e "\e[0;36m&&&&&&&&&...&&&&......&&&..........&"`)
     run(`echo -e   "&&&&&&&&&...&&&&&.....&&&........&&&"`)
