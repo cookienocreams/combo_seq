@@ -1612,21 +1612,21 @@ end
 """
 Spot remove unecessary intermediate files.
 """
-function remove_files(Files_to_Delete::Vector{String})
-    for file in Files_to_Delete
+function remove_files(files_to_delete::Vector{String})
+    for file in files_to_delete
         rm(file)
     end
 end
 
-function remove_files(File_to_Delete::String)
-    rm(File_to_Delete)
+function remove_files(file_to_delete::String)
+    rm(file_to_delete)
 end
 
 """
 Remove all intermediate files.
 """
 function remove_intermediate_files()
-    Files_to_Delete = Set(vcat(
+    files_to_delete = Set(vcat(
         capture_target_files("deduplication_statistics")
         ,capture_target_files(".bt2")
         ,capture_target_files(".miRNA.")
@@ -1637,7 +1637,7 @@ function remove_intermediate_files()
         )
     )
 
-    for file in Files_to_Delete
+    for file in files_to_delete
         rm(file)
     end
 
