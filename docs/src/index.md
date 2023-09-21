@@ -10,7 +10,8 @@
 Documentation for combo_seq.jl
 ```@docs
 MissingReferenceError
-MissingFileError
+IncorrectOrganismError
+MissingFastqsError
 Config
 get_genus_names
 create_target_organism_fasta_file
