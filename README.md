@@ -2,6 +2,7 @@
 Basic analysis of NEXTFLEX Combo-Seq libraries
 
 [![CI](https://github.com/cookienocreams/combo_seq/actions/workflows/CI.yaml/badge.svg)](https://github.com/cookienocreams/combo_seq/actions/workflows/CI.yaml)
+[![Documentation](https://github.com/cookienocreams/combo_seq/actions/workflows/documentation.yaml/badge.svg)](https://github.com/cookienocreams/combo_seq/actions/workflows/documentation.yaml)
 
 ## Script dependencies
 - bowtie2
