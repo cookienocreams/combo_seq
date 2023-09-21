@@ -79,6 +79,17 @@ struct IncorrectOrganismError <: Exception
 end
 
 """
+    struct MissingFastqsError
+        message::String
+    end
+
+A structure that represents a custom exception for missing fastq files.
+"""
+struct MissingFastqsError <: Exception
+    message::String
+end
+
+"""
     struct Config
         need_reference::Bool
         mrna::Union{String, Nothing}
@@ -1659,7 +1670,7 @@ function parse_commandline()
             e.g., /home/user/hg38_mRNA."
             arg_type = String
         "--fasta", "-f"
-            help = "The full mature miRNA fasta file."
+            help = "The full mature miRNA fasta file to be used for analysis."
             arg_type = String
             default = "data/mirgene_all.fas"
         "--transcript", "-t"
@@ -1749,6 +1760,10 @@ function julia_main()::Cint
 
     need_reference = config.need_reference
     fastqs = capture_target_files("_R1_001.fastq.gz")
+    # Check that fastqs exists
+    if isnothing(fastqs)
+        throw(MissingFastqsError("No fastq files found. Expected files with '_R1_001.fastq.gz'."))
+    end
     sample_names = map(sample -> first(split(sample, "_")), fastqs)
     organism_name = create_reference_file(need_reference
                                             , !isnothing(config.transcript) ? config.transcript : "nothing"
