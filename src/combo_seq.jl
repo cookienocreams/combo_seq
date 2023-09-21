@@ -28,8 +28,9 @@ using BGZFStreams
 using CodecZlib
 using ArgParse
 
+export IncorrectOrganismError
+export MissingFastqsError
 export MissingReferenceError
-export MissingFileError
 export Config
 export get_genus_names
 export create_target_organism_fasta_file
