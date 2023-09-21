@@ -94,11 +94,13 @@ The app can be run using the `combo_seq` executable in the `/home/user/combo_seq
 
 ## Basic usage
 
-In a folder containing Combo-Seq fastq files and a bowtie2 miRNA reference `/home/user/miRNA` and a Salmon reference `/home/user/hg38_mRNA` use:
+In a folder containing Combo-Seq fastq files and a bowtie2 miRNA reference contained in `/home/user/combo_seq/data` and a Salmon reference `/home/user/hg38_mRNA` use:
 
 ```julia
-/home/user/combo_seq_app/bin/combo_seq --mrna /home/user/hg38_mRNA --mirna /home/user/miRNA
+/home/user/combo_seq_app/bin/combo_seq --mrna /home/user/hg38_mRNA --fasta /home/user/combo_seq/data/mirgene_all.fas
 ```
+This will perform the ananlysis and output files with miRNA and mRNA count data in addition to the Salmon files necessary to preform 
+further differential expression analyses.
 
 If you do not have a Salmon reference already made and would like the program to make one, you can pass a link to both a transcriptome and genome fasta file. 
 Note this can take a while for large genomes.
