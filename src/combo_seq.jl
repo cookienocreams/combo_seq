@@ -28,9 +28,8 @@ using BGZFStreams
 using CodecZlib
 using ArgParse
 
-export IncorrectOrganismError
-export MissingFastqsError
 export MissingReferenceError
+export MissingFileError
 export Config
 export get_genus_names
 export create_target_organism_fasta_file
@@ -80,17 +79,6 @@ struct IncorrectOrganismError <: Exception
 end
 
 """
-    struct MissingFastqsError
-        message::String
-    end
-
-A structure that represents a custom exception for missing fastq files.
-"""
-struct MissingFastqsError <: Exception
-    message::String
-end
-
-"""
     struct Config
         need_reference::Bool
         mrna::Union{String, Nothing}
@@ -123,19 +111,19 @@ struct Config
                     , transcript::Union{String, Nothing}, genome::Union{String, Nothing}
                     , organism::Union{String, Nothing}, threads::Int
         )
-        
+
         # Check if user specified a Salmon reference   
         if isnothing(mrna) && !need_reference
             throw(MissingReferenceError("No Salmon reference specified"))
         end
 
         # Check if user specified a transciptome fasta
-        if need_reference && isnothing(transcript)
+        if !need_reference && isnothing(transcript)
             throw(MissingReferenceError("No transcriptome fasta specified"))
         end
 
         # Check if user specified a genome fasta
-        if need_reference && isnothing(genome)
+        if !need_reference && isnothing(genome)
             throw(MissingReferenceError("No genome fasta specified"))
         end
 
@@ -281,7 +269,7 @@ function make_salmon_reference(organism_name::String
                     index 
                     -i data/$organism_name 
                     --transcripts gentrome.fa
-                    -k 19 
+                    -k 21
                     --threads $cores
                     --decoys salmon_decoys.txt 
                     --gencode`)
@@ -297,7 +285,7 @@ function make_salmon_reference(organism_name::String
                     index 
                     -i data/$organism_name 
                     --transcripts gentrome.fa
-                    -k 19 
+                    -k 21 
                     --threads $cores
                     --decoys salmon_decoys.txt`)
                     , wait = false
@@ -1399,16 +1387,15 @@ function find_common_rnas(counts_files::Vector{String}
                           , read_count_dict::Dict{String, Int64}=Dict{String, Int64}()
                           )
     
-    info = Vector{Dict{String, Float64}}()
-    items_per_line = rna_type == "miRNA" ? 3 : 2
-    normalization_info = Vector{Dict{String, Float64}}()
+    info = rna_type == "miRNA" ? Vector{Dict{String, Int64}}() : Vector{Dict{String, Float64}}()
+    normalization_info = Vector{Dict{String, Number}}()
     full_names_list = Vector{String}()
 
     for file in counts_files
         rna_file = open(file, "r")
 
-        sample_counts_dictionary = Dict{String, Float64}()
-        sample_normalization_dictionary = Dict{String, Float64}()
+        sample_counts_dictionary = rna_type == "miRNA" ? Dict{String, Int64}() : Dict{String, Float64}()
+        sample_normalization_dictionary = Dict{String, Number}()
 
         # Skip header line
         readline(rna_file)
@@ -1416,7 +1403,7 @@ function find_common_rnas(counts_files::Vector{String}
         for line in eachline(rna_file)
             split_line = split(line, ",")
             
-            if length(split_line) == items_per_line
+            if length(split_line) == 2
                 count = rna_type == "miRNA" ? parse(Int64, split_line[2]) : parse(Float64, split_line[2])
                 rna_name = first(split_line)
 
@@ -1447,8 +1434,8 @@ end
 
 """
     write_common_rna_file(rna_names::Base.KeySet{String, Dict{String, Int64}},
-                          rna_info::Vector{Dict{String, Float64}},
-                          normalization_info::Vector{Dict{String, Float64}},
+                          rna_info::Vector{Dict{String, Number}},
+                          normalization_info::Vector{Dict{String, Number}},
                           sample_names::Vector{SubString{String}};
                           rna_type::String="miRNA")
 
@@ -1470,8 +1457,8 @@ analysis and UMAP on the common RNA data.
 - Conducts principal component analysis and UMAP based on common RNA data.
 """
 function write_common_rna_file(rna_names::Base.KeySet{String, Dict{String, Int64}},
-                               rna_info::Vector{Dict{String, Float64}},
-                               normalization_info::Vector{Dict{String, Float64}},
+                               rna_info::Vector{Dict{String, Number}},
+                               normalization_info::Vector{Dict{String, Number}},
                                sample_names::Vector{SubString{String}};
                                rna_type::String="miRNA"
                                )
@@ -1638,7 +1625,7 @@ end
 Remove all intermediate files.
 """
 function remove_intermediate_files()
-    files_to_delete = Set(vcat(
+    Files_to_Delete = Set(vcat(
         capture_target_files("deduplication_statistics")
         ,capture_target_files(".bt2")
         ,capture_target_files(".miRNA.")
@@ -1649,7 +1636,7 @@ function remove_intermediate_files()
         )
     )
 
-    for file in files_to_delete
+    for file in Files_to_Delete
         rm(file)
     end
 
@@ -1671,7 +1658,7 @@ function parse_commandline()
             e.g., /home/user/hg38_mRNA."
             arg_type = String
         "--fasta", "-f"
-            help = "The full mature miRNA fasta file to be used for analysis."
+            help = "The full mature miRNA fasta file."
             arg_type = String
             default = "data/mirgene_all.fas"
         "--transcript", "-t"
@@ -1702,7 +1689,7 @@ function parse_commandline()
 
     # Create a Config instance from parsed arguments
     config = Config(
-        get(args, "need_reference", false),
+        get(args, "need-reference", false),
         get(args, "mrna", nothing),
         get(args, "fasta", "data/mirgene_all.fas"),
         get(args, "transcript", nothing),
@@ -1761,10 +1748,6 @@ function julia_main()::Cint
 
     need_reference = config.need_reference
     fastqs = capture_target_files("_R1_001.fastq.gz")
-    # Check that fastqs exists
-    if isnothing(fastqs)
-        throw(MissingFastqsError("No fastq files found. Expected files with '_R1_001.fastq.gz'."))
-    end
     sample_names = map(sample -> first(split(sample, "_")), fastqs)
     organism_name = create_reference_file(need_reference
                                             , !isnothing(config.transcript) ? config.transcript : "nothing"
@@ -1797,16 +1780,16 @@ function julia_main()::Cint
                                         )
     plot_metrics(metrics_file, sample_names)
     make_metrics_violin_plot(metrics_file)
-    full_mirna_names_list, mirna_info, rpm_info = find_common_rnas(mirna_counts_files
+    full_mrna_names_list, mirna_info, rpm_info = find_common_rnas(mirna_counts_files
                                                                 , sample_names
                                                                 , rna_type="miRNA"
-                                                                , read_count_dict=read_count_dict
+                                                                , read_count_dict
                                                                 )
-    write_common_rna_file(full_mirna_names_list, mirna_info, rpm_info, sample_names, rna_type="miRNA")
-    full_mrna_names_list, mrna_info, tpm_info = find_common_rnas(mrna_counts_files
-                                                                , sample_names
-                                                                , rna_type="mRNA"
-                                                                )
+    write_common_rna_file(full_mrna_names_list, mirna_info, rpm_info, sample_names, rna_type="miRNA")
+    _, mrna_info, tpm_info = find_common_rnas(mrna_counts_files
+                                                , sample_names
+                                                , rna_type="mRNA"
+                                                )
     write_common_rna_file(full_mrna_names_list, mrna_info, tpm_info, sample_names, rna_type="mRNA")
     remove_intermediate_files()
     println(" ")
